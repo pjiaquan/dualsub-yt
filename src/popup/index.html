@@ -31,6 +31,19 @@
         font-size: 13px;
         color: #666;
       }
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin: 0 0 8px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .toggle-row input[type="checkbox"] {
+        inline-size: 16px;
+        block-size: 16px;
+      }
       button {
         width: 100%;
         border: 0;
@@ -59,9 +72,14 @@
   <body>
     <div class="card">
       <h1>Export Translations</h1>
+      <label class="toggle-row" for="translateToggle">
+        <span>Translate This Video</span>
+        <input id="translateToggle" type="checkbox" />
+      </label>
+      <div id="toggleStatus" class="status"></div>
       <p>Download cached translations and timed subtitles from this YouTube tab as one TXT file.</p>
       <button id="downloadBtn" type="button">Download TXT</button>
-      <div id="status" class="status"></div>
+      <div id="exportStatus" class="status"></div>
     </div>
     <script type="module" src="./popup.js"></script>
   </body>

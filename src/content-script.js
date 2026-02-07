@@ -39,11 +39,20 @@
     aiQueueTimer: 0,
     aiInFlight: false,
     aiLastRequestAt: 0,
+    pocketBaseRefreshPromise: null,
     pocketBaseErrorCache: new Set(),
     timedCaptions: [],
     activeTimedCaption: null,
     lastTimedCaptionTime: Number.NaN,
-    dynamicBottomOffsetPx: Number.NaN
+    dynamicBottomOffsetPx: Number.NaN,
+    videoTranslateOverrides: {},
+    videoTranslationEnabled: true,
+    videoTranslateOverridesLoaded: false,
+    primaryTrackIsAuto: false,
+    autoAiAccumulator: "",
+    autoAiLastCueText: "",
+    autoAiLastUpdateAt: 0,
+    autoAiCurrentSource: ""
   };
 
   const isWatchPage = () => window.location.pathname === "/watch";
@@ -64,6 +73,7 @@
   };
 
   const STORAGE_KEY = "dualsub_settings";
+  const VIDEO_TRANSLATE_OVERRIDES_KEY = "dualsub_video_translate_overrides";
   const RATE_LIMIT_STATUS = 429;
   const INIT_DEBOUNCE_MS = 1500;
   const INIT_RETRY_DELAY_MS = 3000;
@@ -77,6 +87,9 @@
   const AI_DB_STORE = "translations";
   const AI_DB_MAX_RECORDS = 2000;
   const AI_DB_PRUNE_TARGET_RECORDS = 1800;
+  const AUTO_AI_STABLE_WAIT_MS = 900;
+  const AUTO_AI_MIN_CHARS_MULTIPLIER = 2;
+  const AUTO_AI_MIN_OVERLAP_CHARS = 6;
   const CONTROL_BAR_CLEARANCE_PX = 8;
   const CONTROL_BAR_MIN_OPACITY = 0.05;
   const TIMED_CAPTION_MAX_ENTRIES = 5000;
@@ -97,6 +110,7 @@
     pocketBaseUrl: "",
     pocketBaseCollection: "translations",
     pocketBaseTimedCollection: "timed_captions",
+    pocketBaseAuthCollection: "users",
     pocketBaseToken: "",
     pocketBaseUserId: "",
     fontSize: 24,
@@ -233,6 +247,10 @@
       safe.pocketBaseTimedCollection = input.pocketBaseTimedCollection.trim();
     }
 
+    if (typeof input.pocketBaseAuthCollection === "string" && input.pocketBaseAuthCollection.trim()) {
+      safe.pocketBaseAuthCollection = input.pocketBaseAuthCollection.trim();
+    }
+
     if (typeof input.pocketBaseToken === "string") {
       safe.pocketBaseToken = input.pocketBaseToken.trim();
     }
@@ -251,6 +269,98 @@
 
     const result = await browser.storage.local.get(STORAGE_KEY);
     return sanitizeSettings(result ? result[STORAGE_KEY] : null);
+  };
+
+  const normalizeVideoTranslateOverrides = (input) => {
+    if (!input || typeof input !== "object") {
+      return {};
+    }
+
+    const safe = {};
+    for (const [rawVideoId, value] of Object.entries(input)) {
+      const videoId = typeof rawVideoId === "string" ? rawVideoId.trim() : "";
+      if (!videoId) {
+        continue;
+      }
+      if (value === false) {
+        safe[videoId] = false;
+      }
+    }
+    return safe;
+  };
+
+  const loadVideoTranslateOverrides = async () => {
+    if (!globalThis.browser?.storage?.local?.get) {
+      return {};
+    }
+    const result = await browser.storage.local.get(VIDEO_TRANSLATE_OVERRIDES_KEY);
+    return normalizeVideoTranslateOverrides(result ? result[VIDEO_TRANSLATE_OVERRIDES_KEY] : null);
+  };
+
+  const ensureVideoTranslateOverridesLoaded = async () => {
+    if (STATE.videoTranslateOverridesLoaded) {
+      return STATE.videoTranslateOverrides;
+    }
+
+    STATE.videoTranslateOverrides = await loadVideoTranslateOverrides();
+    STATE.videoTranslateOverridesLoaded = true;
+    return STATE.videoTranslateOverrides;
+  };
+
+  const saveVideoTranslateOverrides = async (overrides) => {
+    const normalized = normalizeVideoTranslateOverrides(overrides);
+    if (globalThis.browser?.storage?.local?.set) {
+      await browser.storage.local.set({
+        [VIDEO_TRANSLATE_OVERRIDES_KEY]: normalized
+      });
+    }
+    return normalized;
+  };
+
+  const isVideoTranslationEnabled = (videoId, overrides = STATE.videoTranslateOverrides) => {
+    const safeVideoId = typeof videoId === "string" ? videoId.trim() : "";
+    if (!safeVideoId) {
+      return true;
+    }
+    return overrides?.[safeVideoId] !== false;
+  };
+
+  const updateCurrentVideoTranslationState = () => {
+    const currentVideoId = STATE.videoId || getCurrentVideoId();
+    STATE.videoTranslationEnabled = isVideoTranslationEnabled(currentVideoId, STATE.videoTranslateOverrides);
+    if (!STATE.videoTranslationEnabled) {
+      resetAiState({ clearCache: false });
+    }
+    return STATE.videoTranslationEnabled;
+  };
+
+  const setVideoTranslationOverrideForCurrentVideo = async (enabled) => {
+    await ensureVideoTranslateOverridesLoaded();
+    const currentVideoId = STATE.videoId || getCurrentVideoId();
+    if (!currentVideoId) {
+      return {
+        videoId: "",
+        enabled: true
+      };
+    }
+
+    const nextOverrides = {
+      ...STATE.videoTranslateOverrides
+    };
+
+    if (enabled === false) {
+      nextOverrides[currentVideoId] = false;
+    } else {
+      delete nextOverrides[currentVideoId];
+    }
+
+    STATE.videoTranslateOverrides = await saveVideoTranslateOverrides(nextOverrides);
+    STATE.videoTranslateOverridesLoaded = true;
+    const nextEnabled = updateCurrentVideoTranslationState();
+    return {
+      videoId: currentVideoId,
+      enabled: nextEnabled
+    };
   };
 
   const LANGUAGE_GROUPS = Object.freeze({
@@ -655,7 +765,10 @@
 
       const durationMs = Number(event && event.dDurationMs);
       const start = startMs / 1000;
-      const end = Number.isFinite(durationMs) ? start + durationMs / 1000 : start;
+      const end =
+        Number.isFinite(durationMs) && durationMs > 0
+          ? start + durationMs / 1000
+          : start + DEFAULT_CUE_DURATION_SECONDS;
 
       const segs = Array.isArray(event && event.segs) ? event.segs : [];
       const rawText = segs
@@ -792,6 +905,100 @@
       .filter(Boolean)
       .join("\n")
       .trim();
+  };
+
+  const resetAutoAiAccumulator = () => {
+    STATE.autoAiAccumulator = "";
+    STATE.autoAiLastCueText = "";
+    STATE.autoAiLastUpdateAt = 0;
+    STATE.autoAiCurrentSource = "";
+  };
+
+  const findOverlapLength = (left, right) => {
+    if (!left || !right) {
+      return 0;
+    }
+
+    const max = Math.min(left.length, right.length);
+    for (let length = max; length >= AUTO_AI_MIN_OVERLAP_CHARS; length -= 1) {
+      if (left.slice(-length) === right.slice(0, length)) {
+        return length;
+      }
+    }
+    return 0;
+  };
+
+  const mergeAutoCaptionText = (accumulated, nextText) => {
+    if (!accumulated) {
+      return nextText;
+    }
+    if (!nextText) {
+      return accumulated;
+    }
+    if (nextText === accumulated) {
+      return accumulated;
+    }
+    if (nextText.startsWith(accumulated)) {
+      return nextText;
+    }
+    if (accumulated.startsWith(nextText)) {
+      return accumulated;
+    }
+
+    const overlapLength = findOverlapLength(accumulated, nextText);
+    if (overlapLength > 0) {
+      return normalizeAiSourceText(`${accumulated}${nextText.slice(overlapLength)}`);
+    }
+
+    if (accumulated.includes(nextText)) {
+      return accumulated;
+    }
+
+    return normalizeAiSourceText(`${accumulated}\n${nextText}`);
+  };
+
+  const resolveAiSourceText = (primaryText) => {
+    const normalized = normalizeAiSourceText(primaryText);
+    if (!normalized) {
+      return "";
+    }
+
+    if (!STATE.primaryTrackIsAuto) {
+      STATE.autoAiCurrentSource = normalized;
+      return normalized;
+    }
+
+    const now = Date.now();
+    if (normalized !== STATE.autoAiLastCueText) {
+      STATE.autoAiAccumulator = mergeAutoCaptionText(STATE.autoAiAccumulator, normalized);
+      STATE.autoAiLastCueText = normalized;
+      STATE.autoAiLastUpdateAt = now;
+    }
+
+    const accumulated = normalizeAiSourceText(STATE.autoAiAccumulator);
+    if (!accumulated) {
+      return STATE.autoAiCurrentSource || "";
+    }
+
+    const minChars = Number.isFinite(STATE.settings?.aiMinChars)
+      ? STATE.settings.aiMinChars
+      : DEFAULT_SETTINGS.aiMinChars;
+    const minAutoChars = Math.max(minChars, Math.round(minChars * AUTO_AI_MIN_CHARS_MULTIPLIER));
+    const compactLength = accumulated.replace(/\s+/g, "").length;
+    if (compactLength < minAutoChars) {
+      return STATE.autoAiCurrentSource || "";
+    }
+
+    const stableEnough = now - STATE.autoAiLastUpdateAt >= AUTO_AI_STABLE_WAIT_MS;
+    const sentenceEnded = /[.!?。！？]["'”’)]?$/.test(accumulated);
+    if ((stableEnough || sentenceEnded) && accumulated !== STATE.autoAiCurrentSource) {
+      STATE.autoAiCurrentSource = accumulated;
+      // Start building the next chunk from current cue text.
+      STATE.autoAiAccumulator = normalized;
+      STATE.autoAiLastUpdateAt = now;
+    }
+
+    return STATE.autoAiCurrentSource || "";
   };
 
   const getEffectiveAiSourceLanguage = (settings) => {
@@ -1181,10 +1388,13 @@
 
       let response = null;
       try {
-        response = await fetch(endpoint, {
-          method: "GET",
-          headers: getPocketBaseHeaders(settings)
-        });
+        response = await pocketBaseFetch(
+          endpoint,
+          {
+            method: "GET"
+          },
+          settings
+        );
       } catch (error) {
         logPocketBaseErrorOnce("load-timed-network", {
           endpoint,
@@ -1273,6 +1483,130 @@
     return "";
   };
 
+  const persistPocketBaseSession = async (settings, token, userId = "") => {
+    const next = sanitizeSettings({
+      ...(settings || {}),
+      pocketBaseToken: token || "",
+      pocketBaseUserId: userId || ""
+    });
+
+    try {
+      if (globalThis.browser?.storage?.local?.set) {
+        await browser.storage.local.set({
+          [STORAGE_KEY]: next
+        });
+      }
+    } catch (error) {
+      // noop
+    }
+
+    if (STATE.settings && typeof STATE.settings === "object") {
+      STATE.settings = next;
+    }
+
+    return next;
+  };
+
+  const resolvePocketBaseAuthCollection = (settings) => {
+    if (typeof settings?.pocketBaseAuthCollection === "string" && settings.pocketBaseAuthCollection.trim()) {
+      return settings.pocketBaseAuthCollection.trim();
+    }
+    return "users";
+  };
+
+  const refreshPocketBaseSession = async (settings) => {
+    if (STATE.pocketBaseRefreshPromise) {
+      return STATE.pocketBaseRefreshPromise;
+    }
+
+    const baseUrl = typeof settings?.pocketBaseUrl === "string" ? settings.pocketBaseUrl.trim() : "";
+    const token = typeof settings?.pocketBaseToken === "string" ? settings.pocketBaseToken.trim() : "";
+    if (!baseUrl || !token) {
+      return settings;
+    }
+
+    const endpoint =
+      `${baseUrl}/api/collections/${encodeURIComponent(resolvePocketBaseAuthCollection(settings))}/auth-refresh`;
+
+    STATE.pocketBaseRefreshPromise = (async () => {
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        });
+
+        if (!response.ok) {
+          if (response.status === 401 || response.status === 403) {
+            return persistPocketBaseSession(settings, "", "");
+          }
+          return settings;
+        }
+
+        const payload = await response.json().catch(() => ({}));
+        const refreshedToken =
+          typeof payload?.token === "string" && payload.token.trim() ? payload.token.trim() : "";
+        if (!refreshedToken) {
+          return settings;
+        }
+
+        const refreshedUserId =
+          (typeof payload?.record?.id === "string" && payload.record.id.trim()) ||
+          decodePocketBaseUserIdFromToken(refreshedToken) ||
+          "";
+
+        return persistPocketBaseSession(settings, refreshedToken, refreshedUserId);
+      } catch (error) {
+        return settings;
+      } finally {
+        STATE.pocketBaseRefreshPromise = null;
+      }
+    })();
+
+    return STATE.pocketBaseRefreshPromise;
+  };
+
+  const pocketBaseFetch = async (endpoint, init = {}, settings) => {
+    const resolvedSettings = settings || STATE.settings || {};
+    const token =
+      typeof resolvedSettings?.pocketBaseToken === "string"
+        ? resolvedSettings.pocketBaseToken.trim()
+        : "";
+
+    const baseHeaders = {
+      ...(init.headers || {})
+    };
+
+    const send = (accessToken) =>
+      fetch(endpoint, {
+        ...init,
+        headers: accessToken
+          ? {
+            ...baseHeaders,
+            Authorization: `Bearer ${accessToken}`
+          }
+          : baseHeaders
+      });
+
+    const firstResponse = await send(token);
+    if (firstResponse.status !== 401 || !token) {
+      return firstResponse;
+    }
+
+    const refreshedSettings = await refreshPocketBaseSession(resolvedSettings);
+    const refreshedToken =
+      typeof refreshedSettings?.pocketBaseToken === "string"
+        ? refreshedSettings.pocketBaseToken.trim()
+        : "";
+
+    if (refreshedToken && refreshedToken !== token) {
+      return send(refreshedToken);
+    }
+
+    return send("");
+  };
+
   const getPocketBaseUserId = (settings) => {
     if (!settings) {
       return "";
@@ -1346,10 +1680,13 @@
       `?perPage=1&fields=translation&filter=${encodeURIComponent(filter)}`;
 
     try {
-      const response = await fetch(endpoint, {
-        method: "GET",
-        headers: getPocketBaseHeaders(settings)
-      });
+      const response = await pocketBaseFetch(
+        endpoint,
+        {
+          method: "GET"
+        },
+        settings
+      );
       if (!response.ok) {
         const message = await readPocketBaseError(response);
         logPocketBaseErrorOnce("load", {
@@ -1393,14 +1730,17 @@
     }
 
     try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getPocketBaseHeaders(settings)
+      const response = await pocketBaseFetch(
+        endpoint,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
         },
-        body: JSON.stringify(payload)
-      });
+        settings
+      );
 
       if (!response.ok) {
         const message = await readPocketBaseError(response);
@@ -1450,14 +1790,17 @@
     }
 
     try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getPocketBaseHeaders(settings)
+      const response = await pocketBaseFetch(
+        endpoint,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
         },
-        body: JSON.stringify(payload)
-      });
+        settings
+      );
 
       if (!response.ok) {
         const message = await readPocketBaseError(response);
@@ -1486,6 +1829,7 @@
     STATE.aiInFlight = false;
     STATE.aiDbLookup.clear();
     STATE.aiPending.clear();
+    resetAutoAiAccumulator();
     if (clearCache) {
       STATE.aiCache.clear();
       STATE.aiCacheSource.clear();
@@ -2036,9 +2380,53 @@ console.log("dualsub-yt: content-script loaded");
     return container;
   };
 
+  const areYoutubeSubtitlesEnabled = (video) => {
+    const player = video?.closest(".html5-video-player") || document.getElementById("movie_player");
+    if (!player) {
+      return false;
+    }
+
+    if (typeof player.isSubtitlesOn === "function") {
+      try {
+        return Boolean(player.isSubtitlesOn());
+      } catch (error) {
+        // fallback to DOM checks
+      }
+    }
+
+    const subtitlesButton = player.querySelector(".ytp-subtitles-button");
+    if (subtitlesButton) {
+      const pressed = subtitlesButton.getAttribute("aria-pressed");
+      if (pressed === "true") {
+        return true;
+      }
+      if (pressed === "false") {
+        return false;
+      }
+    }
+
+    const captionWindow = player.querySelector(".caption-window") || player.querySelector(".ytp-caption-window-container");
+    if (!captionWindow) {
+      return false;
+    }
+
+    const style = window.getComputedStyle(captionWindow);
+    if (style.display === "none" || style.visibility === "hidden") {
+      return false;
+    }
+
+    const opacity = Number.parseFloat(style.opacity);
+    if (Number.isFinite(opacity) && opacity <= 0.01) {
+      return false;
+    }
+
+    return true;
+  };
+
   const loadCaptions = async (tracks, settings) => {
     const selection = selectDualTracks(tracks, settings);
-    const useAiTranslation = isAiTranslationEnabled(settings);
+    const translationEnabledForVideo = STATE.videoTranslationEnabled !== false;
+    const useAiTranslation = translationEnabledForVideo && isAiTranslationEnabled(settings);
     const fetchSafely = async (label, url) => {
       if (!url) {
         return { cues: [], error: null };
@@ -2062,12 +2450,10 @@ console.log("dualsub-yt: content-script loaded");
       }
     };
 
-    // Primary text can be read from on-screen YouTube captions; skip fetching
-    // auto English primary track to reduce timedtext calls and avoid 429 bursts.
-    const shouldFetchPrimary =
-      selection.primary &&
-      !(selection.primary.isAuto && toLanguageGroup(settings?.primaryLang || "en") === LANGUAGE_GROUPS.ENGLISH);
-    const shouldFetchSecondary = selection.secondary && !useAiTranslation;
+    // Always fetch primary cues when available so we can use stable timed entries
+    // instead of live DOM captions that update in fragments.
+    const shouldFetchPrimary = Boolean(selection.primary);
+    const shouldFetchSecondary = translationEnabledForVideo && selection.secondary && !useAiTranslation;
 
     const [primaryResult, secondaryResult] = await Promise.all([
       shouldFetchPrimary ? fetchSafely("primary", selection.primary.baseUrl) : Promise.resolve({ cues: [], error: null }),
@@ -2082,10 +2468,10 @@ console.log("dualsub-yt: content-script loaded");
       (primaryResult.error && primaryResult.error.status === RATE_LIMIT_STATUS) ||
       (secondaryResult.error && secondaryResult.error.status === RATE_LIMIT_STATUS);
 
-    if (selection.primary && primaryCues.length === 0) {
+    if (shouldFetchPrimary && selection.primary && primaryCues.length === 0) {
       console.warn("DualSub: primary track selected but no parsed cues", selection.primary.baseUrl);
     }
-    if (selection.secondary && secondaryCues.length === 0) {
+    if (shouldFetchSecondary && selection.secondary && secondaryCues.length === 0) {
       console.warn("DualSub: secondary track selected but no parsed cues", selection.secondary.baseUrl);
     }
 
@@ -2169,6 +2555,7 @@ console.log("dualsub-yt: content-script loaded");
 
       const refreshed = await loadCaptions(STATE.tracks, STATE.settings);
       STATE.cues = refreshed.cues;
+      STATE.primaryTrackIsAuto = Boolean(refreshed.selection?.primary?.isAuto);
       STATE.cueIndex = { primary: 0, secondary: 0 };
 
       if (refreshed.meta && refreshed.meta.rateLimited) {
@@ -2386,17 +2773,45 @@ console.log("dualsub-yt: content-script loaded");
   const startRenderLoop = (video, overlay) => {
     const tick = () => {
       const time = video.currentTime || 0;
+      const subtitlesEnabled = areYoutubeSubtitlesEnabled(video);
+      const hasPrimaryCues = Array.isArray(STATE.cues.primary) && STATE.cues.primary.length > 0;
+      const translationEnabledForVideo = STATE.videoTranslationEnabled !== false;
 
-      // Poll live captions each tick as a fallback when MutationObserver
-      // doesn't observe updates (YouTube frequently updates text nodes).
-      try {
-        const polled = readLiveCaptionText();
-        if (polled !== STATE.liveCaptionText) {
-          STATE.liveCaptionText = polled;
-          console.log("YouTubeCaption:", STATE.liveCaptionText);
+      if (!subtitlesEnabled) {
+        if (STATE.liveCaptionText) {
+          STATE.liveCaptionText = "";
         }
-      } catch (err) {
-        // noop
+        if (STATE.autoAiAccumulator || STATE.autoAiCurrentSource) {
+          resetAutoAiAccumulator();
+        }
+
+        overlay.update("", "");
+        if (STATE.debugText.primary) {
+          STATE.debugText.primary = "";
+        }
+        if (STATE.debugText.secondary) {
+          STATE.debugText.secondary = "";
+        }
+        if (STATE.debugText.translationSource) {
+          STATE.debugText.translationSource = "";
+        }
+
+        syncTimedCaptionTimeline(time, "", "", "");
+        STATE.rafId = requestAnimationFrame(tick);
+        return;
+      }
+
+      // Poll live captions only when primary timed cues are unavailable.
+      if (!hasPrimaryCues) {
+        try {
+          const polled = readLiveCaptionText();
+          if (polled !== STATE.liveCaptionText) {
+            STATE.liveCaptionText = polled;
+            console.log("YouTubeCaption:", STATE.liveCaptionText);
+          }
+        } catch (err) {
+          // noop
+        }
       }
 
       const primaryResult = findActiveCue(STATE.cues.primary, time, STATE.cueIndex.primary);
@@ -2405,20 +2820,27 @@ console.log("dualsub-yt: content-script loaded");
       STATE.cueIndex.primary = primaryResult.index;
       STATE.cueIndex.secondary = secondaryResult.index;
 
-      const primaryText = primaryResult.cue ? primaryResult.cue.text : (STATE.liveCaptionText || "");
-      let secondaryText = secondaryResult.cue ? secondaryResult.cue.text : "";
-      let translationSource = secondaryResult.cue ? "youtube" : "";
+      const primaryText = primaryResult.cue
+        ? primaryResult.cue.text
+        : (hasPrimaryCues ? "" : (STATE.liveCaptionText || ""));
+      let secondaryText = "";
+      let translationSource = "";
 
-      if (!secondaryText && isAiTranslationEnabled(STATE.settings)) {
-        const normalized = normalizeAiSourceText(primaryText);
-        if (normalized) {
-          const cacheKey = buildAiCacheKey(normalized, STATE.settings, STATE.videoId);
+      if (translationEnabledForVideo) {
+        secondaryText = secondaryResult.cue ? secondaryResult.cue.text : "";
+        translationSource = secondaryResult.cue ? "youtube" : "";
+      }
+
+      if (translationEnabledForVideo && !secondaryText && isAiTranslationEnabled(STATE.settings)) {
+        const aiSourceText = resolveAiSourceText(primaryText);
+        if (aiSourceText) {
+          const cacheKey = buildAiCacheKey(aiSourceText, STATE.settings, STATE.videoId);
           const cached = cacheKey ? STATE.aiCache.get(cacheKey) : "";
           if (cached) {
             secondaryText = cached;
             translationSource = cacheKey ? STATE.aiCacheSource.get(cacheKey) || "cache:memory" : "cache:memory";
           } else {
-            secondaryText = queueAiTranslation(normalized) || "";
+            secondaryText = queueAiTranslation(aiSourceText) || "";
             if (secondaryText) {
               translationSource = cacheKey ? STATE.aiCacheSource.get(cacheKey) || "cache:memory" : "cache:memory";
             }
@@ -2485,6 +2907,8 @@ console.log("dualsub-yt: content-script loaded");
     const settings = await loadSettings();
     STATE.settings = settings;
     STATE.videoId = getCurrentVideoId();
+    await ensureVideoTranslateOverridesLoaded();
+    updateCurrentVideoTranslationState();
     resetAiState({ clearCache: true });
 
     const response = await waitFor(getPlayerResponse, 15000, 250);
@@ -2564,6 +2988,7 @@ console.log("dualsub-yt: content-script loaded");
     STATE.tracks = tracks;
 
     const captions = await loadCaptions(tracks, settings);
+    STATE.primaryTrackIsAuto = Boolean(captions.selection?.primary?.isAuto);
     if (globalThis.__dualsub_debug__) {
       console.log("DualSub selection", captions.selection);
       updateDebugPanel(
@@ -2600,7 +3025,32 @@ console.log("dualsub-yt: content-script loaded");
     startRenderLoop(video, overlayInstance);
 
     const onStorageChange = async (changes, areaName) => {
-      if (areaName !== "local" || !changes[STORAGE_KEY]) {
+      if (areaName !== "local") {
+        return;
+      }
+
+      if (changes[VIDEO_TRANSLATE_OVERRIDES_KEY]) {
+        STATE.videoTranslateOverrides = normalizeVideoTranslateOverrides(
+          changes[VIDEO_TRANSLATE_OVERRIDES_KEY].newValue
+        );
+        STATE.videoTranslateOverridesLoaded = true;
+        const wasEnabled = STATE.videoTranslationEnabled;
+        updateCurrentVideoTranslationState();
+        if (wasEnabled !== STATE.videoTranslationEnabled && STATE.tracks.length && STATE.settings) {
+          const nextCaptions = await loadCaptions(STATE.tracks, STATE.settings);
+          STATE.cues = nextCaptions.cues;
+          STATE.primaryTrackIsAuto = Boolean(nextCaptions.selection?.primary?.isAuto);
+          STATE.cueIndex = { primary: 0, secondary: 0 };
+          if (nextCaptions.meta && nextCaptions.meta.rateLimited) {
+            scheduleCaptionRetry();
+          } else {
+            clearCaptionRetry();
+            STATE.captionRetryDelayMs = BASE_CAPTION_RETRY_DELAY_MS;
+          }
+        }
+      }
+
+      if (!changes[STORAGE_KEY]) {
         return;
       }
 
@@ -2626,6 +3076,7 @@ console.log("dualsub-yt: content-script loaded");
       if (languageChanged || aiSettingChanged) {
         const nextCaptions = await loadCaptions(STATE.tracks, nextSettings);
         STATE.cues = nextCaptions.cues;
+        STATE.primaryTrackIsAuto = Boolean(nextCaptions.selection?.primary?.isAuto);
         STATE.cueIndex = { primary: 0, secondary: 0 };
         if (nextCaptions.meta && nextCaptions.meta.rateLimited) {
           scheduleCaptionRetry();
@@ -2712,6 +3163,8 @@ console.log("dualsub-yt: content-script loaded");
     clearInitRetry();
     closeActiveTimedCaption(STATE.lastTimedCaptionTime);
     STATE.videoId = "";
+    STATE.videoTranslationEnabled = true;
+    STATE.primaryTrackIsAuto = false;
     STATE.timedCaptions = [];
     STATE.activeTimedCaption = null;
     STATE.lastTimedCaptionTime = Number.NaN;
@@ -2725,42 +3178,96 @@ console.log("dualsub-yt: content-script loaded");
   };
 
   const handleRuntimeMessage = (message, _sender, sendResponse) => {
-    if (!message || message.type !== "dualsub_export_translations") {
+    if (!message || typeof message.type !== "string") {
       return undefined;
     }
 
-    Promise.all([loadAllAiTranslationsFromDb(), loadSettings()])
-      .then(async ([rows, latestSettings]) => {
-        const localTimedCaptions = getTimedCaptionsForExport();
-        const currentVideoId = STATE.videoId || getCurrentVideoId();
-        const remoteTimedCaptions = await loadTimedCaptionsFromPocketBase(
-          currentVideoId,
-          latestSettings || STATE.settings
-        );
-        const timedCaptions = mergeTimedCaptionRows(remoteTimedCaptions, localTimedCaptions);
-        const normalized = rows
-          .filter((row) => row && typeof row === "object")
-          .map((row) => ({
-            key: typeof row.key === "string" ? row.key : "",
-            videoId: typeof row.videoId === "string" ? row.videoId : "",
-            model: typeof row.model === "string" ? row.model : "",
-            sourceLang: typeof row.sourceLang === "string" ? row.sourceLang : "",
-            targetLang: typeof row.targetLang === "string" ? row.targetLang : "",
-            sourceText: typeof row.sourceText === "string" ? row.sourceText : "",
-            translation: typeof row.translation === "string" ? row.translation : "",
-            updatedAt: Number.isFinite(row.updatedAt) ? row.updatedAt : 0
-          }))
-          .sort((left, right) => right.updatedAt - left.updatedAt);
-        sendResponse({ ok: true, records: normalized, timedCaptions });
-      })
-      .catch((error) => {
-        sendResponse({
-          ok: false,
-          error: error && error.message ? error.message : "Failed to export translations."
+    if (message.type === "dualsub_get_video_translate_state") {
+      ensureVideoTranslateOverridesLoaded()
+        .then(() => {
+          const currentVideoId = STATE.videoId || getCurrentVideoId();
+          sendResponse({
+            ok: true,
+            videoId: currentVideoId,
+            enabled: isVideoTranslationEnabled(currentVideoId)
+          });
+        })
+        .catch((error) => {
+          sendResponse({
+            ok: false,
+            error: error && error.message ? error.message : "Failed to read translation state."
+          });
         });
-      });
+      return true;
+    }
 
-    return true;
+    if (message.type === "dualsub_set_video_translate_state") {
+      const nextEnabled = message.enabled !== false;
+      setVideoTranslationOverrideForCurrentVideo(nextEnabled)
+        .then(async (result) => {
+          if (STATE.tracks.length && STATE.settings) {
+            const nextCaptions = await loadCaptions(STATE.tracks, STATE.settings);
+            STATE.cues = nextCaptions.cues;
+            STATE.primaryTrackIsAuto = Boolean(nextCaptions.selection?.primary?.isAuto);
+            STATE.cueIndex = { primary: 0, secondary: 0 };
+            if (nextCaptions.meta && nextCaptions.meta.rateLimited) {
+              scheduleCaptionRetry();
+            } else {
+              clearCaptionRetry();
+              STATE.captionRetryDelayMs = BASE_CAPTION_RETRY_DELAY_MS;
+            }
+          }
+          sendResponse({
+            ok: true,
+            videoId: result.videoId,
+            enabled: result.enabled
+          });
+        })
+        .catch((error) => {
+          sendResponse({
+            ok: false,
+            error: error && error.message ? error.message : "Failed to update translation state."
+          });
+        });
+      return true;
+    }
+
+    if (message.type === "dualsub_export_translations") {
+      Promise.all([loadAllAiTranslationsFromDb(), loadSettings()])
+        .then(async ([rows, latestSettings]) => {
+          const localTimedCaptions = getTimedCaptionsForExport();
+          const currentVideoId = STATE.videoId || getCurrentVideoId();
+          const remoteTimedCaptions = await loadTimedCaptionsFromPocketBase(
+            currentVideoId,
+            latestSettings || STATE.settings
+          );
+          const timedCaptions = mergeTimedCaptionRows(remoteTimedCaptions, localTimedCaptions);
+          const normalized = rows
+            .filter((row) => row && typeof row === "object")
+            .map((row) => ({
+              key: typeof row.key === "string" ? row.key : "",
+              videoId: typeof row.videoId === "string" ? row.videoId : "",
+              model: typeof row.model === "string" ? row.model : "",
+              sourceLang: typeof row.sourceLang === "string" ? row.sourceLang : "",
+              targetLang: typeof row.targetLang === "string" ? row.targetLang : "",
+              sourceText: typeof row.sourceText === "string" ? row.sourceText : "",
+              translation: typeof row.translation === "string" ? row.translation : "",
+              updatedAt: Number.isFinite(row.updatedAt) ? row.updatedAt : 0
+            }))
+            .sort((left, right) => right.updatedAt - left.updatedAt);
+          sendResponse({ ok: true, records: normalized, timedCaptions });
+        })
+        .catch((error) => {
+          sendResponse({
+            ok: false,
+            error: error && error.message ? error.message : "Failed to export translations."
+          });
+        });
+
+      return true;
+    }
+
+    return undefined;
   };
 
   const runtimeApi = globalThis.browser?.runtime || globalThis.chrome?.runtime;

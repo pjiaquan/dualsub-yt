@@ -179,6 +179,58 @@ const sendMessageToTab = async (extensionApi, tabId, message) => {
   );
 };
 
+const isYoutubeWatchTab = (tab) => {
+  const url = typeof tab?.url === "string" ? tab.url : "";
+  return /^https:\/\/www\.youtube\.com\/watch(?:[?#]|$)/.test(url);
+};
+
+const getCurrentVideoTranslationState = async ({ extensionApi }) => {
+  const activeTab = await queryActiveTab(extensionApi);
+  if (!activeTab || !Number.isInteger(activeTab.id)) {
+    throw new Error("No active tab found.");
+  }
+  if (!isYoutubeWatchTab(activeTab)) {
+    throw new Error("Open a YouTube watch page first, then try again.");
+  }
+
+  const response = await sendMessageToTab(extensionApi, activeTab.id, {
+    type: "dualsub_get_video_translate_state"
+  });
+
+  if (!response || response.ok !== true) {
+    throw new Error(response?.error || "Could not read translation state from this tab.");
+  }
+
+  return {
+    videoId: typeof response.videoId === "string" ? response.videoId : "",
+    enabled: response.enabled !== false
+  };
+};
+
+const setCurrentVideoTranslationState = async ({ extensionApi, enabled }) => {
+  const activeTab = await queryActiveTab(extensionApi);
+  if (!activeTab || !Number.isInteger(activeTab.id)) {
+    throw new Error("No active tab found.");
+  }
+  if (!isYoutubeWatchTab(activeTab)) {
+    throw new Error("Open a YouTube watch page first, then try again.");
+  }
+
+  const response = await sendMessageToTab(extensionApi, activeTab.id, {
+    type: "dualsub_set_video_translate_state",
+    enabled: enabled !== false
+  });
+
+  if (!response || response.ok !== true) {
+    throw new Error(response?.error || "Could not update translation state for this tab.");
+  }
+
+  return {
+    videoId: typeof response.videoId === "string" ? response.videoId : "",
+    enabled: response.enabled !== false
+  };
+};
+
 const exportTranslationsFromActiveTab = async ({
   extensionApi,
   now = () => Date.now(),
@@ -227,5 +279,8 @@ export {
   withCallback,
   queryActiveTab,
   sendMessageToTab,
+  isYoutubeWatchTab,
+  getCurrentVideoTranslationState,
+  setCurrentVideoTranslationState,
   exportTranslationsFromActiveTab
 };

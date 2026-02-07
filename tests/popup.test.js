@@ -2,7 +2,10 @@ import {
   exportTranslationsFromActiveTab,
   formatSrtTime,
   formatTimestamp,
+  getCurrentVideoTranslationState,
+  isYoutubeWatchTab,
   mapPopupErrorMessage,
+  setCurrentVideoTranslationState,
   toTxt
 } from "../src/popup/core.js";
 
@@ -81,6 +84,43 @@ const runErrorMappingTests = () => {
 
   const passthrough = mapPopupErrorMessage("No cached translations found yet.");
   assert(passthrough === "No cached translations found yet.", "popup error mapping should preserve normal messages");
+};
+
+const runYouTubeWatchTabTests = () => {
+  assert(
+    isYoutubeWatchTab({ url: "https://www.youtube.com/watch?v=abc123" }) === true,
+    "isYoutubeWatchTab should accept YouTube watch URL"
+  );
+  assert(
+    isYoutubeWatchTab({ url: "https://www.youtube.com/" }) === false,
+    "isYoutubeWatchTab should reject non-watch YouTube URL"
+  );
+};
+
+const runVideoToggleStateTests = async () => {
+  const extensionApi = {
+    tabs: {
+      query() {
+        return Promise.resolve([{ id: 5, url: "https://www.youtube.com/watch?v=abc123" }]);
+      },
+      sendMessage(_tabId, message) {
+        if (message.type === "dualsub_get_video_translate_state") {
+          return Promise.resolve({ ok: true, videoId: "abc123", enabled: false });
+        }
+        if (message.type === "dualsub_set_video_translate_state") {
+          return Promise.resolve({ ok: true, videoId: "abc123", enabled: message.enabled !== false });
+        }
+        return Promise.resolve({ ok: false });
+      }
+    }
+  };
+
+  const state = await getCurrentVideoTranslationState({ extensionApi });
+  assert(state.videoId === "abc123", "getCurrentVideoTranslationState should return video id");
+  assert(state.enabled === false, "getCurrentVideoTranslationState should return enabled state");
+
+  const next = await setCurrentVideoTranslationState({ extensionApi, enabled: true });
+  assert(next.enabled === true, "setCurrentVideoTranslationState should update enabled state");
 };
 
 const runExportSuccessPromiseApiTest = async () => {
@@ -262,6 +302,8 @@ const run = async () => {
   runFormatTests();
   runTxtFallbackFormatTests();
   runErrorMappingTests();
+  runYouTubeWatchTabTests();
+  await runVideoToggleStateTests();
   await runExportSuccessPromiseApiTest();
   await runExportSuccessCallbackApiTest();
   await runTimedOnlyExportTest();
