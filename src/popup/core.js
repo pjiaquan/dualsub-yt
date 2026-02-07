@@ -9,13 +9,78 @@ const formatTimestamp = (ms) => {
   }
 };
 
-const toTxt = (records, exportedAt = new Date()) => {
+const formatSrtTime = (seconds) => {
+  const safeSeconds = Number.isFinite(seconds) && seconds >= 0 ? seconds : 0;
+  const totalMs = Math.round(safeSeconds * 1000);
+  const milliseconds = totalMs % 1000;
+  const totalSeconds = (totalMs - milliseconds) / 1000;
+  const secs = totalSeconds % 60;
+  const totalMinutes = (totalSeconds - secs) / 60;
+  const minutes = totalMinutes % 60;
+  const hours = (totalMinutes - minutes) / 60;
+
+  return (
+    `${String(hours).padStart(2, "0")}:` +
+    `${String(minutes).padStart(2, "0")}:` +
+    `${String(secs).padStart(2, "0")},` +
+    `${String(milliseconds).padStart(3, "0")}`
+  );
+};
+
+const normalizeTimedCaption = (row) => {
+  if (!row || typeof row !== "object") {
+    return null;
+  }
+
+  const start = Number.isFinite(row.startTime) ? Math.max(0, row.startTime) : 0;
+  const rawEnd = Number.isFinite(row.endTime) ? Math.max(0, row.endTime) : start;
+  const end = rawEnd > start ? rawEnd : start + 1;
+
+  return {
+    videoId: typeof row.videoId === "string" ? row.videoId : "",
+    startTime: start,
+    endTime: end,
+    sourceText: typeof row.sourceText === "string" ? row.sourceText : "",
+    translation: typeof row.translation === "string" ? row.translation : ""
+  };
+};
+
+const toTxt = (records, timedCaptions = [], exportedAt = new Date()) => {
+  const safeRecords = Array.isArray(records) ? records : [];
+  const safeTimedCaptions = Array.isArray(timedCaptions)
+    ? timedCaptions.map(normalizeTimedCaption).filter(Boolean)
+    : [];
+
+  if (safeTimedCaptions.length > 0) {
+    const sorted = [...safeTimedCaptions].sort(
+      (left, right) => left.startTime - right.startTime || left.endTime - right.endTime
+    );
+    const lines = [];
+    sorted.forEach((caption, index) => {
+      lines.push(String(index + 1));
+      lines.push(`${formatSrtTime(caption.startTime)} --> ${formatSrtTime(caption.endTime)}`);
+      const source = caption.sourceText || "";
+      const translated = caption.translation || "";
+      if (source) {
+        lines.push(source);
+      }
+      if (translated && translated !== source) {
+        lines.push(translated);
+      }
+      if (!source && translated) {
+        lines.push(translated);
+      }
+      lines.push("");
+    });
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
   const lines = [];
   lines.push("# DualSub Translation Export");
   lines.push(`exported_at: ${exportedAt.toISOString()}`);
-  lines.push(`total_records: ${records.length}`);
+  lines.push(`total_records: ${safeRecords.length}`);
 
-  records.forEach((record, index) => {
+  safeRecords.forEach((record, index) => {
     lines.push("");
     lines.push(`## Record ${index + 1}`);
     if (record.videoId) {
@@ -137,22 +202,26 @@ const exportTranslationsFromActiveTab = async ({
   }
 
   const records = Array.isArray(response.records) ? response.records : [];
-  if (records.length === 0) {
-    throw new Error("No cached translations found yet.");
+  const timedCaptions = Array.isArray(response.timedCaptions)
+    ? response.timedCaptions.map(normalizeTimedCaption).filter(Boolean)
+    : [];
+  if (records.length === 0 && timedCaptions.length === 0) {
+    throw new Error("No cached translations or timed subtitles found yet.");
   }
 
   const timestamp = now();
-  const txt = toTxt(records, new Date(timestamp));
+  const txt = toTxt(records, timedCaptions, new Date(timestamp));
   const filename = `dualsub-translations-${timestamp}.txt`;
   downloadTextFile(filename, txt);
   return {
-    count: records.length,
+    count: timedCaptions.length || records.length,
     filename
   };
 };
 
 export {
   formatTimestamp,
+  formatSrtTime,
   toTxt,
   mapPopupErrorMessage,
   withCallback,

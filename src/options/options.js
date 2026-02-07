@@ -68,6 +68,7 @@ const applySettingsToForm = (settings) => {
   form.aiMinChars.value = settings.aiMinChars;
   form.pocketBaseUrl.value = settings.pocketBaseUrl || "";
   form.pocketBaseCollection.value = settings.pocketBaseCollection || "";
+  form.pocketBaseTimedCollection.value = settings.pocketBaseTimedCollection || "";
   form.pocketBaseAuthCollection.value = settings.pocketBaseAuthCollection || "users";
   form.pocketBaseEmail.value = settings.pocketBaseEmail || "";
   form.pocketBasePassword.value = "";
@@ -75,6 +76,11 @@ const applySettingsToForm = (settings) => {
   form.pocketBaseUserId.value = settings.pocketBaseUserId || "";
   form.fontSize.value = settings.fontSize;
   form.lineSpacing.value = settings.lineSpacing;
+  form.subtitleTextColor.value = settings.subtitleTextColor;
+  form.subtitleBackgroundColor.value = settings.subtitleBackgroundColor;
+  form.subtitleBackgroundOpacity.value = settings.subtitleBackgroundOpacity;
+  form.subtitleFontWeight.value = String(settings.subtitleFontWeight);
+  form.subtitleBorderRadiusPx.value = settings.subtitleBorderRadiusPx;
   form.opacity.value = settings.opacity;
   form.position.value = settings.position;
   form.topOffsetPx.value = settings.topOffsetPx;
@@ -98,12 +104,18 @@ const readFormValues = () => {
     aiMinChars: Number.parseInt(form.aiMinChars.value, 10),
     pocketBaseUrl: form.pocketBaseUrl.value,
     pocketBaseCollection: form.pocketBaseCollection.value,
+    pocketBaseTimedCollection: form.pocketBaseTimedCollection.value,
     pocketBaseAuthCollection: form.pocketBaseAuthCollection.value,
     pocketBaseEmail: form.pocketBaseEmail.value,
     pocketBaseToken: form.pocketBaseToken.value,
     pocketBaseUserId: form.pocketBaseUserId.value,
     fontSize: Number.parseFloat(form.fontSize.value),
     lineSpacing: Number.parseFloat(form.lineSpacing.value),
+    subtitleTextColor: form.subtitleTextColor.value,
+    subtitleBackgroundColor: form.subtitleBackgroundColor.value,
+    subtitleBackgroundOpacity: Number.parseFloat(form.subtitleBackgroundOpacity.value),
+    subtitleFontWeight: Number.parseInt(form.subtitleFontWeight.value, 10),
+    subtitleBorderRadiusPx: Number.parseInt(form.subtitleBorderRadiusPx.value, 10),
     opacity: Number.parseFloat(form.opacity.value),
     position: form.position.value,
     topOffsetPx: Number.parseInt(form.topOffsetPx.value, 10),

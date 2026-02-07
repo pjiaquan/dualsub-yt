@@ -27,6 +27,8 @@
     captionObserver: null,
     captionRetryTimer: 0,
     captionRetryDelayMs: 15000,
+    initRetryTimer: 0,
+    initWatchdogTimer: 0,
     lastInitAttemptAt: 0,
     videoId: "",
     aiCache: new Map(),
@@ -37,7 +39,11 @@
     aiQueueTimer: 0,
     aiInFlight: false,
     aiLastRequestAt: 0,
-    pocketBaseErrorCache: new Set()
+    pocketBaseErrorCache: new Set(),
+    timedCaptions: [],
+    activeTimedCaption: null,
+    lastTimedCaptionTime: Number.NaN,
+    dynamicBottomOffsetPx: Number.NaN
   };
 
   const isWatchPage = () => window.location.pathname === "/watch";
@@ -60,6 +66,8 @@
   const STORAGE_KEY = "dualsub_settings";
   const RATE_LIMIT_STATUS = 429;
   const INIT_DEBOUNCE_MS = 1500;
+  const INIT_RETRY_DELAY_MS = 3000;
+  const INIT_WATCHDOG_INTERVAL_MS = 4000;
   const BASE_CAPTION_RETRY_DELAY_MS = 15000;
   const MAX_CAPTION_RETRY_DELAY_MS = 120000;
   const AI_QUEUE_DELAY_MS = 550;
@@ -67,6 +75,13 @@
   const AI_DB_NAME = "dualsub_cache";
   const AI_DB_VERSION = 1;
   const AI_DB_STORE = "translations";
+  const AI_DB_MAX_RECORDS = 2000;
+  const AI_DB_PRUNE_TARGET_RECORDS = 1800;
+  const CONTROL_BAR_CLEARANCE_PX = 8;
+  const CONTROL_BAR_MIN_OPACITY = 0.05;
+  const TIMED_CAPTION_MAX_ENTRIES = 5000;
+  const TIMED_CAPTION_MIN_DURATION_SECONDS = 0.08;
+  const TIMED_CAPTION_SEEK_GAP_SECONDS = 2.5;
   const DEFAULT_SETTINGS = Object.freeze({
     primaryLang: "en",
     secondaryLang: "zh-Hant",
@@ -81,13 +96,39 @@
     aiMinChars: 12,
     pocketBaseUrl: "",
     pocketBaseCollection: "translations",
+    pocketBaseTimedCollection: "timed_captions",
     pocketBaseToken: "",
     pocketBaseUserId: "",
     fontSize: 24,
     lineSpacing: 1.1,
+    subtitleTextColor: "#ffffff",
+    subtitleBackgroundColor: "#000000",
+    subtitleBackgroundOpacity: 0.35,
+    subtitleFontWeight: 600,
+    subtitleBorderRadiusPx: 4,
     position: "bottom",
     opacity: 0.9
   });
+
+  const HEX_COLOR_REGEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+  const normalizeHexColor = (value) => {
+    if (typeof value !== "string") {
+      return "";
+    }
+
+    const trimmed = value.trim();
+    if (!HEX_COLOR_REGEX.test(trimmed)) {
+      return "";
+    }
+
+    if (trimmed.length === 4) {
+      const [, r, g, b] = trimmed;
+      return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+    }
+
+    return trimmed.toLowerCase();
+  };
 
   const sanitizeSettings = (input) => {
     const safe = {
@@ -104,6 +145,28 @@
 
     if (typeof input.lineSpacing === "number" && input.lineSpacing >= 1 && input.lineSpacing <= 2) {
       safe.lineSpacing = input.lineSpacing;
+    }
+
+    const subtitleTextColor = normalizeHexColor(input.subtitleTextColor);
+    if (subtitleTextColor) {
+      safe.subtitleTextColor = subtitleTextColor;
+    }
+
+    const subtitleBackgroundColor = normalizeHexColor(input.subtitleBackgroundColor);
+    if (subtitleBackgroundColor) {
+      safe.subtitleBackgroundColor = subtitleBackgroundColor;
+    }
+
+    if (typeof input.subtitleBackgroundOpacity === "number" && input.subtitleBackgroundOpacity >= 0 && input.subtitleBackgroundOpacity <= 1) {
+      safe.subtitleBackgroundOpacity = input.subtitleBackgroundOpacity;
+    }
+
+    if (typeof input.subtitleFontWeight === "number" && input.subtitleFontWeight >= 300 && input.subtitleFontWeight <= 900) {
+      safe.subtitleFontWeight = Math.round(input.subtitleFontWeight);
+    }
+
+    if (typeof input.subtitleBorderRadiusPx === "number" && input.subtitleBorderRadiusPx >= 0 && input.subtitleBorderRadiusPx <= 24) {
+      safe.subtitleBorderRadiusPx = Math.round(input.subtitleBorderRadiusPx);
     }
 
     if (typeof input.opacity === "number" && input.opacity >= 0.2 && input.opacity <= 1) {
@@ -164,6 +227,10 @@
 
     if (typeof input.pocketBaseCollection === "string" && input.pocketBaseCollection.trim()) {
       safe.pocketBaseCollection = input.pocketBaseCollection.trim();
+    }
+
+    if (typeof input.pocketBaseTimedCollection === "string" && input.pocketBaseTimedCollection.trim()) {
+      safe.pocketBaseTimedCollection = input.pocketBaseTimedCollection.trim();
     }
 
     if (typeof input.pocketBaseToken === "string") {
@@ -727,6 +794,86 @@
       .trim();
   };
 
+  const getEffectiveAiSourceLanguage = (settings) => {
+    const aiSourceLang = normalizeLanguageCode(settings?.aiSourceLang || "");
+    if (aiSourceLang && aiSourceLang !== "auto") {
+      return aiSourceLang;
+    }
+    return normalizeLanguageCode(settings?.primaryLang || "");
+  };
+
+  const inferLanguageFromText = (text) => {
+    if (!text || typeof text !== "string") {
+      return "";
+    }
+
+    const han = (text.match(/[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/g) || []).length;
+    const hiragana = (text.match(/[\u3040-\u309F]/g) || []).length;
+    const katakana = (text.match(/[\u30A0-\u30FF]/g) || []).length;
+    const hangul = (text.match(/[\uAC00-\uD7AF]/g) || []).length;
+
+    if (hangul > 0 && hangul >= han + hiragana + katakana) {
+      return "ko";
+    }
+    if (hiragana + katakana > 0) {
+      return "ja";
+    }
+    if (han > 0) {
+      return "zh";
+    }
+
+    return "";
+  };
+
+  const areEquivalentTranslationLanguages = (sourceLang, targetLang) => {
+    const sourceNormalized = normalizeLanguageCode(sourceLang);
+    const targetNormalized = normalizeLanguageCode(targetLang);
+    if (!sourceNormalized || !targetNormalized) {
+      return false;
+    }
+    if (sourceNormalized === targetNormalized) {
+      return true;
+    }
+
+    const sourceGroup = toLanguageGroup(sourceNormalized);
+    const targetGroup = toLanguageGroup(targetNormalized);
+    if (!sourceGroup || !targetGroup) {
+      return false;
+    }
+
+    if (sourceGroup === "zh" || targetGroup === "zh") {
+      return false;
+    }
+
+    return sourceGroup === targetGroup;
+  };
+
+  const shouldSkipAiTranslation = (sourceText, settings) => {
+    if (!settings) {
+      return false;
+    }
+
+    const targetLang = normalizeLanguageCode(settings.aiTargetLang || settings.secondaryLang || "");
+    if (!targetLang) {
+      return false;
+    }
+
+    const effectiveSourceLang = getEffectiveAiSourceLanguage(settings);
+    if (areEquivalentTranslationLanguages(effectiveSourceLang, targetLang)) {
+      return true;
+    }
+
+    const aiSourceLang = normalizeLanguageCode(settings.aiSourceLang || "");
+    if (aiSourceLang === "auto") {
+      const inferredSourceLang = inferLanguageFromText(sourceText);
+      if (areEquivalentTranslationLanguages(inferredSourceLang, targetLang)) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
   let aiDbPromise = null;
   const openAiDb = () => {
     if (aiDbPromise) {
@@ -802,9 +949,129 @@
       updatedAt: now
     };
 
+    const countAiRecords = async () =>
+      new Promise((resolve) => {
+        try {
+          const tx = db.transaction(AI_DB_STORE, "readonly");
+          const request = tx.objectStore(AI_DB_STORE).count();
+          request.onsuccess = () => resolve(Number(request.result) || 0);
+          request.onerror = () => resolve(0);
+        } catch (error) {
+          resolve(0);
+        }
+      });
+
+    const deleteOldestAiRecords = async (deleteCount) =>
+      new Promise((resolve) => {
+        if (!Number.isFinite(deleteCount) || deleteCount <= 0) {
+          resolve(0);
+          return;
+        }
+
+        try {
+          let deleted = 0;
+          let settled = false;
+          const tx = db.transaction(AI_DB_STORE, "readwrite");
+          const store = tx.objectStore(AI_DB_STORE);
+          const index = store.index("updatedAt");
+          const request = index.openCursor(null, "next");
+
+          const done = () => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            resolve(deleted);
+          };
+
+          request.onsuccess = (event) => {
+            const cursor = event?.target?.result;
+            if (!cursor || deleted >= deleteCount) {
+              return;
+            }
+            cursor.delete();
+            deleted += 1;
+            cursor.continue();
+          };
+          request.onerror = done;
+          tx.oncomplete = done;
+          tx.onerror = done;
+          tx.onabort = done;
+        } catch (error) {
+          resolve(0);
+        }
+      });
+
+    const pruneAiDbIfNeeded = async ({ force = false } = {}) => {
+      const total = await countAiRecords();
+      if (!force && total <= AI_DB_MAX_RECORDS) {
+        return 0;
+      }
+
+      const target = Math.max(0, AI_DB_PRUNE_TARGET_RECORDS);
+      const deleteCount = Math.max(0, total - target);
+      if (deleteCount <= 0) {
+        return 0;
+      }
+
+      return deleteOldestAiRecords(deleteCount);
+    };
+
+    const writeRecord = async () =>
+      new Promise((resolve) => {
+        try {
+          let settled = false;
+          const tx = db.transaction(AI_DB_STORE, "readwrite");
+          tx.objectStore(AI_DB_STORE).put(record);
+
+          const finish = (value) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            resolve(value);
+          };
+
+          tx.oncomplete = () => finish({ ok: true, quotaExceeded: false });
+          tx.onerror = () => {
+            const errorName = tx.error?.name || "";
+            finish({
+              ok: false,
+              quotaExceeded: errorName === "QuotaExceededError" || errorName === "UnknownError"
+            });
+          };
+          tx.onabort = () => {
+            const errorName = tx.error?.name || "";
+            finish({
+              ok: false,
+              quotaExceeded: errorName === "QuotaExceededError" || errorName === "UnknownError"
+            });
+          };
+        } catch (error) {
+          const errorName = error?.name || "";
+          resolve({
+            ok: false,
+            quotaExceeded: errorName === "QuotaExceededError" || errorName === "UnknownError"
+          });
+        }
+      });
+
     try {
-      const tx = db.transaction(AI_DB_STORE, "readwrite");
-      tx.objectStore(AI_DB_STORE).put(record);
+      const firstAttempt = await writeRecord();
+      if (firstAttempt.ok) {
+        await pruneAiDbIfNeeded();
+        return;
+      }
+
+      if (firstAttempt.quotaExceeded) {
+        const deleted = await pruneAiDbIfNeeded({ force: true });
+        if (deleted > 0) {
+          const retry = await writeRecord();
+          if (retry.ok) {
+            return;
+          }
+        }
+      }
     } catch (error) {
       // noop
     }
@@ -872,6 +1139,95 @@
       typeof settings.pocketBaseCollection === "string" &&
       settings.pocketBaseCollection.trim()
     );
+  };
+
+  const getPocketBaseTimedCollection = (settings) => {
+    if (!settings) {
+      return "";
+    }
+    if (typeof settings.pocketBaseTimedCollection === "string" && settings.pocketBaseTimedCollection.trim()) {
+      return settings.pocketBaseTimedCollection.trim();
+    }
+    if (typeof settings.pocketBaseCollection === "string" && settings.pocketBaseCollection.trim()) {
+      return settings.pocketBaseCollection.trim();
+    }
+    return "";
+  };
+
+  const loadTimedCaptionsFromPocketBase = async (videoId, settings) => {
+    const normalizedVideoId = typeof videoId === "string" ? videoId.trim() : "";
+    if (!normalizedVideoId) {
+      return [];
+    }
+
+    const baseUrl = typeof settings?.pocketBaseUrl === "string" ? settings.pocketBaseUrl.trim() : "";
+    const collection = getPocketBaseTimedCollection(settings);
+    if (!baseUrl || !collection) {
+      return [];
+    }
+
+    const perPage = 200;
+    const maxPages = 20;
+    const filter = `video_id="${escapePocketBaseFilterValue(normalizedVideoId)}"`;
+    const fields = "video_id,start_sec,end_sec,source_text,translation,translation_source";
+    const rows = [];
+
+    let page = 1;
+    while (page <= maxPages) {
+      const endpoint =
+        `${baseUrl}/api/collections/${encodeURIComponent(collection)}/records` +
+        `?page=${page}&perPage=${perPage}&sort=start_sec&fields=${encodeURIComponent(fields)}` +
+        `&filter=${encodeURIComponent(filter)}`;
+
+      let response = null;
+      try {
+        response = await fetch(endpoint, {
+          method: "GET",
+          headers: getPocketBaseHeaders(settings)
+        });
+      } catch (error) {
+        logPocketBaseErrorOnce("load-timed-network", {
+          endpoint,
+          collection,
+          message: error && error.message ? error.message : String(error || "")
+        });
+        return rows;
+      }
+
+      if (!response.ok) {
+        const message = await readPocketBaseError(response);
+        logPocketBaseErrorOnce("load-timed", {
+          status: response.status,
+          endpoint,
+          collection,
+          message
+        });
+        return rows;
+      }
+
+      const payload = await response.json().catch(() => ({}));
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      for (const item of items) {
+        const start = Number(item?.start_sec);
+        const end = Number(item?.end_sec);
+        rows.push({
+          videoId: typeof item?.video_id === "string" ? item.video_id : normalizedVideoId,
+          startTime: Number.isFinite(start) ? Math.max(0, start) : 0,
+          endTime: Number.isFinite(end) ? Math.max(0, end) : 0,
+          sourceText: typeof item?.source_text === "string" ? item.source_text : "",
+          translation: typeof item?.translation === "string" ? item.translation : "",
+          translationSource: typeof item?.translation_source === "string" ? item.translation_source : ""
+        });
+      }
+
+      const totalPages = Number(payload?.totalPages);
+      if (!Number.isFinite(totalPages) || page >= totalPages) {
+        break;
+      }
+      page += 1;
+    }
+
+    return rows;
   };
 
   const escapePocketBaseFilterValue = (value) =>
@@ -1064,6 +1420,63 @@
     }
   };
 
+  const saveTimedCaptionToPocketBase = async (entry, settings) => {
+    if (!entry || (!entry.sourceText && !entry.translation)) {
+      return;
+    }
+
+    const baseUrl = typeof settings?.pocketBaseUrl === "string" ? settings.pocketBaseUrl.trim() : "";
+    const collection = getPocketBaseTimedCollection(settings);
+    if (!baseUrl || !collection) {
+      return;
+    }
+    const endpoint = `${baseUrl}/api/collections/${encodeURIComponent(collection)}/records`;
+
+    const payload = {
+      video_id: entry.videoId || "",
+      start_sec: Number.isFinite(entry.startTime) ? Number(entry.startTime.toFixed(3)) : 0,
+      end_sec: Number.isFinite(entry.endTime) ? Number(entry.endTime.toFixed(3)) : 0,
+      source_text: entry.sourceText || "",
+      translation: entry.translation || ""
+    };
+
+    if (entry.translationSource) {
+      payload.translation_source = entry.translationSource;
+    }
+
+    const userId = getPocketBaseUserId(settings);
+    if (userId) {
+      payload.user = userId;
+    }
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...getPocketBaseHeaders(settings)
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        const message = await readPocketBaseError(response);
+        logPocketBaseErrorOnce("save-timed", {
+          status: response.status,
+          endpoint,
+          collection,
+          message
+        });
+      }
+    } catch (error) {
+      logPocketBaseErrorOnce("save-timed-network", {
+        endpoint,
+        collection,
+        message: error && error.message ? error.message : String(error || "")
+      });
+    }
+  };
+
   const resetAiState = ({ clearCache = false } = {}) => {
     if (STATE.aiQueueTimer) {
       clearTimeout(STATE.aiQueueTimer);
@@ -1210,15 +1623,21 @@
       return "";
     }
 
+    const cacheKey = buildAiCacheKey(normalized, STATE.settings, STATE.videoId);
+    if (!cacheKey) {
+      return "";
+    }
+
+    if (shouldSkipAiTranslation(normalized, STATE.settings)) {
+      STATE.aiCache.set(cacheKey, normalized);
+      STATE.aiCacheSource.set(cacheKey, "skip:same-language");
+      return normalized;
+    }
+
     const minChars = Number.isFinite(STATE.settings.aiMinChars)
       ? STATE.settings.aiMinChars
       : DEFAULT_SETTINGS.aiMinChars;
     if (normalized.replace(/\s+/g, "").length < minChars) {
-      return "";
-    }
-
-    const cacheKey = buildAiCacheKey(normalized, STATE.settings, STATE.videoId);
-    if (!cacheKey) {
       return "";
     }
 
@@ -1320,6 +1739,22 @@ console.log("dualsub-yt: content-script loaded");
     background: "rgba(0, 0, 0, 0.35)"
   });
 
+  const hexToRgba = (hexColor, opacity, fallback = "rgba(0, 0, 0, 0.35)") => {
+    const normalized = normalizeHexColor(hexColor);
+    if (!normalized) {
+      return fallback;
+    }
+
+    const alpha = Number.isFinite(opacity) ? Math.min(1, Math.max(0, opacity)) : 0.35;
+    const r = Number.parseInt(normalized.slice(1, 3), 16);
+    const g = Number.parseInt(normalized.slice(3, 5), 16);
+    const b = Number.parseInt(normalized.slice(5, 7), 16);
+    if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) {
+      return fallback;
+    }
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  };
+
   const applySettings = (overlay, settings) => {
     if (!overlay || !settings) {
       return;
@@ -1329,6 +1764,17 @@ console.log("dualsub-yt: content-script loaded");
     const fontSize = settings.fontSize ? `${settings.fontSize}px` : "24px";
     const lineSpacing = settings.lineSpacing ? settings.lineSpacing : 1.1;
     const opacity = settings.opacity ? settings.opacity : 0.9;
+    const textColor = normalizeHexColor(settings.subtitleTextColor) || DEFAULT_SETTINGS.subtitleTextColor;
+    const backgroundColor = normalizeHexColor(settings.subtitleBackgroundColor) || DEFAULT_SETTINGS.subtitleBackgroundColor;
+    const backgroundOpacity = Number.isFinite(settings.subtitleBackgroundOpacity)
+      ? settings.subtitleBackgroundOpacity
+      : DEFAULT_SETTINGS.subtitleBackgroundOpacity;
+    const subtitleFontWeight = Number.isFinite(settings.subtitleFontWeight)
+      ? settings.subtitleFontWeight
+      : DEFAULT_SETTINGS.subtitleFontWeight;
+    const subtitleBorderRadiusPx = Number.isFinite(settings.subtitleBorderRadiusPx)
+      ? settings.subtitleBorderRadiusPx
+      : DEFAULT_SETTINGS.subtitleBorderRadiusPx;
     const topOffsetPx = Number.isFinite(settings.topOffsetPx) ? settings.topOffsetPx : DEFAULT_SETTINGS.topOffsetPx;
     const bottomOffsetPx = Number.isFinite(settings.bottomOffsetPx)
       ? settings.bottomOffsetPx
@@ -1340,8 +1786,77 @@ console.log("dualsub-yt: content-script loaded");
     root.style.top = settings.position === "top" ? `${topOffsetPx}px` : "unset";
     primaryLine.style.fontSize = fontSize;
     secondaryLine.style.fontSize = fontSize;
+    primaryLine.style.color = textColor;
+    secondaryLine.style.color = textColor;
+    primaryLine.style.background = hexToRgba(backgroundColor, backgroundOpacity);
+    secondaryLine.style.background = hexToRgba(backgroundColor, backgroundOpacity);
+    primaryLine.style.fontWeight = `${Math.round(subtitleFontWeight)}`;
+    secondaryLine.style.fontWeight = `${Math.round(subtitleFontWeight)}`;
+    primaryLine.style.borderRadius = `${Math.max(0, Math.round(subtitleBorderRadiusPx))}px`;
+    secondaryLine.style.borderRadius = `${Math.max(0, Math.round(subtitleBorderRadiusPx))}px`;
     primaryLine.style.display = showTranslationOnly ? "none" : "block";
     root.style.gap = `${Math.max(0, (lineSpacing - 1) * 16)}px`;
+    STATE.dynamicBottomOffsetPx = Number.NaN;
+  };
+
+  const getVisibleControlBarHeight = (video) => {
+    if (!video) {
+      return 0;
+    }
+
+    const player = video.closest(".html5-video-player") || document.getElementById("movie_player");
+    if (!player || player.classList.contains("ytp-autohide")) {
+      return 0;
+    }
+
+    const controlBar = player.querySelector(".ytp-chrome-bottom");
+    if (!controlBar) {
+      return 0;
+    }
+
+    const style = window.getComputedStyle(controlBar);
+    if (style.display === "none" || style.visibility === "hidden") {
+      return 0;
+    }
+
+    const opacity = Number.parseFloat(style.opacity);
+    if (Number.isFinite(opacity) && opacity <= CONTROL_BAR_MIN_OPACITY) {
+      return 0;
+    }
+
+    const videoRect = video.getBoundingClientRect();
+    const controlRect = controlBar.getBoundingClientRect();
+    if (!videoRect || !controlRect) {
+      return 0;
+    }
+
+    const overlap = videoRect.bottom - controlRect.top;
+    if (!Number.isFinite(overlap) || overlap <= 0) {
+      return 0;
+    }
+
+    return Math.max(0, Math.min(overlap, videoRect.height));
+  };
+
+  const syncOverlayBottomOffsetWithControls = (overlay, settings, video) => {
+    if (!overlay?.root || !settings || !video || settings.position === "top") {
+      return;
+    }
+
+    const baseBottom = Number.isFinite(settings.bottomOffsetPx)
+      ? settings.bottomOffsetPx
+      : DEFAULT_SETTINGS.bottomOffsetPx;
+    const controlBarHeight = getVisibleControlBarHeight(video);
+    const dynamicBottom = Math.round(
+      baseBottom + (controlBarHeight > 0 ? controlBarHeight + CONTROL_BAR_CLEARANCE_PX : 0)
+    );
+
+    if (STATE.dynamicBottomOffsetPx === dynamicBottom) {
+      return;
+    }
+
+    overlay.root.style.bottom = `${dynamicBottom}px`;
+    STATE.dynamicBottomOffsetPx = dynamicBottom;
   };
 
   const createOverlay = (container, settings) => {
@@ -1414,13 +1929,13 @@ console.log("dualsub-yt: content-script loaded");
     });
 
   const getPlayerResponse = () => {
-    if (globalThis.ytInitialPlayerResponse) {
-      return globalThis.ytInitialPlayerResponse;
-    }
-
     const player = document.getElementById("movie_player");
     if (player && typeof player.getPlayerResponse === "function") {
       return player.getPlayerResponse();
+    }
+
+    if (globalThis.ytInitialPlayerResponse) {
+      return globalThis.ytInitialPlayerResponse;
     }
 
     const raw = globalThis.ytplayer?.config?.args?.player_response;
@@ -1593,6 +2108,50 @@ console.log("dualsub-yt: content-script loaded");
     }
   };
 
+  const clearInitRetry = () => {
+    if (STATE.initRetryTimer) {
+      clearTimeout(STATE.initRetryTimer);
+      STATE.initRetryTimer = 0;
+    }
+  };
+
+  const scheduleInitRetry = () => {
+    if (STATE.initRetryTimer || !isWatchPage()) {
+      return;
+    }
+
+    console.warn(`DualSub: scheduling init retry in ${Math.round(INIT_RETRY_DELAY_MS / 1000)}s`);
+    STATE.initRetryTimer = setTimeout(() => {
+      STATE.initRetryTimer = 0;
+      if (!isWatchPage() || STATE.cleanup) {
+        return;
+      }
+      STATE.initialized = false;
+      init();
+    }, INIT_RETRY_DELAY_MS);
+  };
+
+  const startInitWatchdog = () => {
+    if (STATE.initWatchdogTimer) {
+      return;
+    }
+
+    STATE.initWatchdogTimer = setInterval(() => {
+      if (!isWatchPage()) {
+        return;
+      }
+      if (STATE.cleanup || STATE.startPromise) {
+        return;
+      }
+      const elapsed = Date.now() - STATE.lastInitAttemptAt;
+      if (elapsed < INIT_DEBOUNCE_MS) {
+        return;
+      }
+      STATE.initialized = false;
+      init();
+    }, INIT_WATCHDOG_INTERVAL_MS);
+  };
+
   const scheduleCaptionRetry = () => {
     if (!STATE.tracks.length || !STATE.settings) {
       return;
@@ -1652,6 +2211,178 @@ console.log("dualsub-yt: content-script loaded");
     return { cue: null, index };
   };
 
+  const normalizeTimedCaptionText = (text) => {
+    if (!text || typeof text !== "string") {
+      return "";
+    }
+    return text
+      .replace(/\r/g, "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  };
+
+  const toSafeCaptionTime = (time) => {
+    if (!Number.isFinite(time) || time < 0) {
+      return 0;
+    }
+    return time;
+  };
+
+  const pushTimedCaption = (entry) => {
+    if (!entry || (!entry.sourceText && !entry.translation)) {
+      return;
+    }
+    STATE.timedCaptions.push(entry);
+    if (STATE.timedCaptions.length > TIMED_CAPTION_MAX_ENTRIES) {
+      STATE.timedCaptions.shift();
+    }
+  };
+
+  const closeActiveTimedCaption = (endTime) => {
+    const active = STATE.activeTimedCaption;
+    if (!active) {
+      return;
+    }
+
+    const safeEnd = Math.max(active.startTime, toSafeCaptionTime(endTime));
+    const duration = safeEnd - active.startTime;
+    if (duration >= TIMED_CAPTION_MIN_DURATION_SECONDS) {
+      const entry = {
+        videoId: active.videoId,
+        startTime: active.startTime,
+        endTime: safeEnd,
+        sourceText: active.sourceText,
+        translation: active.translation,
+        translationSource: active.translationSource
+      };
+      pushTimedCaption(entry);
+      saveTimedCaptionToPocketBase(entry, STATE.settings);
+    }
+
+    STATE.activeTimedCaption = null;
+  };
+
+  const syncTimedCaptionTimeline = (time, sourceText, translation, translationSource) => {
+    const safeTime = toSafeCaptionTime(time);
+    const normalizedSource = normalizeTimedCaptionText(sourceText);
+    const normalizedTranslation = normalizeTimedCaptionText(translation);
+    const hasText = Boolean(normalizedSource || normalizedTranslation);
+    const previousTime = STATE.lastTimedCaptionTime;
+    const hasSeekGap =
+      Number.isFinite(previousTime) &&
+      Math.abs(safeTime - previousTime) > TIMED_CAPTION_SEEK_GAP_SECONDS;
+
+    if (hasSeekGap && STATE.activeTimedCaption) {
+      closeActiveTimedCaption(previousTime);
+    }
+
+    if (!hasText) {
+      closeActiveTimedCaption(safeTime);
+      STATE.lastTimedCaptionTime = safeTime;
+      return;
+    }
+
+    if (!STATE.activeTimedCaption) {
+      STATE.activeTimedCaption = {
+        videoId: STATE.videoId || "",
+        startTime: safeTime,
+        endTime: safeTime,
+        sourceText: normalizedSource,
+        translation: normalizedTranslation,
+        translationSource: translationSource || ""
+      };
+      STATE.lastTimedCaptionTime = safeTime;
+      return;
+    }
+
+    const active = STATE.activeTimedCaption;
+    if (active.sourceText === normalizedSource) {
+      active.endTime = Math.max(active.endTime, safeTime);
+      if (normalizedTranslation || !active.translation) {
+        active.translation = normalizedTranslation;
+      }
+      if (translationSource) {
+        active.translationSource = translationSource;
+      }
+      STATE.lastTimedCaptionTime = safeTime;
+      return;
+    }
+
+    closeActiveTimedCaption(safeTime);
+    STATE.activeTimedCaption = {
+      videoId: STATE.videoId || "",
+      startTime: safeTime,
+      endTime: safeTime,
+      sourceText: normalizedSource,
+      translation: normalizedTranslation,
+      translationSource: translationSource || ""
+    };
+    STATE.lastTimedCaptionTime = safeTime;
+  };
+
+  const getTimedCaptionsForExport = () => {
+    const rows = STATE.timedCaptions.slice();
+    const active = STATE.activeTimedCaption;
+    if (active) {
+      rows.push({
+        ...active,
+        endTime: Math.max(active.endTime, toSafeCaptionTime(STATE.lastTimedCaptionTime))
+      });
+    }
+
+    return rows
+      .filter((row) => row && (row.sourceText || row.translation))
+      .map((row) => ({
+        videoId: typeof row.videoId === "string" ? row.videoId : "",
+        startTime: Number.isFinite(row.startTime) ? Math.max(0, row.startTime) : 0,
+        endTime: Number.isFinite(row.endTime) ? Math.max(0, row.endTime) : 0,
+        sourceText: typeof row.sourceText === "string" ? row.sourceText : "",
+        translation: typeof row.translation === "string" ? row.translation : "",
+        translationSource: typeof row.translationSource === "string" ? row.translationSource : ""
+      }));
+  };
+
+  const mergeTimedCaptionRows = (...rowGroups) => {
+    const merged = new Map();
+    const toKey = (row) =>
+      [
+        row.videoId || "",
+        Number.isFinite(row.startTime) ? row.startTime.toFixed(3) : "0.000",
+        Number.isFinite(row.endTime) ? row.endTime.toFixed(3) : "0.000",
+        row.sourceText || "",
+        row.translation || ""
+      ].join("|");
+
+    for (const group of rowGroups) {
+      if (!Array.isArray(group)) {
+        continue;
+      }
+      for (const row of group) {
+        if (!row || typeof row !== "object") {
+          continue;
+        }
+        if (!row.sourceText && !row.translation) {
+          continue;
+        }
+        merged.set(toKey(row), {
+          videoId: typeof row.videoId === "string" ? row.videoId : "",
+          startTime: Number.isFinite(row.startTime) ? Math.max(0, row.startTime) : 0,
+          endTime: Number.isFinite(row.endTime) ? Math.max(0, row.endTime) : 0,
+          sourceText: typeof row.sourceText === "string" ? row.sourceText : "",
+          translation: typeof row.translation === "string" ? row.translation : "",
+          translationSource: typeof row.translationSource === "string" ? row.translationSource : ""
+        });
+      }
+    }
+
+    return Array.from(merged.values()).sort(
+      (left, right) => left.startTime - right.startTime || left.endTime - right.endTime
+    );
+  };
+
   const startRenderLoop = (video, overlay) => {
     const tick = () => {
       const time = video.currentTime || 0;
@@ -1697,6 +2428,7 @@ console.log("dualsub-yt: content-script loaded");
 
       const showTranslationOnly = STATE.settings?.subtitleDisplayMode === "translated-only";
       const primaryTextForDisplay = showTranslationOnly ? "" : primaryText;
+      syncOverlayBottomOffsetWithControls(overlay, STATE.settings, video);
       overlay.update(primaryTextForDisplay, secondaryText);
 
       if (primaryText !== STATE.debugText.primary) {
@@ -1713,6 +2445,8 @@ console.log("dualsub-yt: content-script loaded");
       } else if (!translationSource && STATE.debugText.translationSource) {
         STATE.debugText.translationSource = "";
       }
+
+      syncTimedCaptionTimeline(time, primaryText, secondaryText, translationSource);
 
       if (globalThis.__dualsub_debug__) {
         // legacy debug panel behavior
@@ -1924,6 +2658,7 @@ console.log("dualsub-yt: content-script loaded");
 
   const init = async () => {
     if (!isWatchPage()) {
+      clearInitRetry();
       return;
     }
 
@@ -1946,11 +2681,22 @@ console.log("dualsub-yt: content-script loaded");
     STATE.initialized = true;
     STATE.startPromise = initOverlay()
       .then((cleanup) => {
-        STATE.cleanup = cleanup;
-        window.__dualsub__ = { version: "0.1.0" };
+        if (typeof cleanup === "function") {
+          STATE.cleanup = cleanup;
+          clearInitRetry();
+          window.__dualsub__ = { version: "0.1.0" };
+          return;
+        }
+
+        STATE.cleanup = null;
+        STATE.initialized = false;
+        scheduleInitRetry();
       })
       .catch((error) => {
         console.error("DualSub init failed", error);
+        STATE.cleanup = null;
+        STATE.initialized = false;
+        scheduleInitRetry();
       })
       .finally(() => {
         STATE.startPromise = null;
@@ -1963,7 +2709,13 @@ console.log("dualsub-yt: content-script loaded");
       STATE.cleanup = null;
     }
     stopRenderLoop();
+    clearInitRetry();
+    closeActiveTimedCaption(STATE.lastTimedCaptionTime);
     STATE.videoId = "";
+    STATE.timedCaptions = [];
+    STATE.activeTimedCaption = null;
+    STATE.lastTimedCaptionTime = Number.NaN;
+    STATE.dynamicBottomOffsetPx = Number.NaN;
     STATE.initialized = false;
   };
 
@@ -1977,8 +2729,15 @@ console.log("dualsub-yt: content-script loaded");
       return undefined;
     }
 
-    loadAllAiTranslationsFromDb()
-      .then((rows) => {
+    Promise.all([loadAllAiTranslationsFromDb(), loadSettings()])
+      .then(async ([rows, latestSettings]) => {
+        const localTimedCaptions = getTimedCaptionsForExport();
+        const currentVideoId = STATE.videoId || getCurrentVideoId();
+        const remoteTimedCaptions = await loadTimedCaptionsFromPocketBase(
+          currentVideoId,
+          latestSettings || STATE.settings
+        );
+        const timedCaptions = mergeTimedCaptionRows(remoteTimedCaptions, localTimedCaptions);
         const normalized = rows
           .filter((row) => row && typeof row === "object")
           .map((row) => ({
@@ -1992,7 +2751,7 @@ console.log("dualsub-yt: content-script loaded");
             updatedAt: Number.isFinite(row.updatedAt) ? row.updatedAt : 0
           }))
           .sort((left, right) => right.updatedAt - left.updatedAt);
-        sendResponse({ ok: true, records: normalized });
+        sendResponse({ ok: true, records: normalized, timedCaptions });
       })
       .catch((error) => {
         sendResponse({
@@ -2009,7 +2768,12 @@ console.log("dualsub-yt: content-script loaded");
     runtimeApi.onMessage.addListener(handleRuntimeMessage);
   }
 
-  onReady(init);
+  onReady(() => {
+    init();
+    startInitWatchdog();
+  });
+  window.addEventListener("load", init);
+  window.addEventListener("pageshow", init);
   window.addEventListener("yt-navigate-finish", handleNavigation);
   window.addEventListener("popstate", handleNavigation);
 })();

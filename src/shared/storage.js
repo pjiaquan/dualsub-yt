@@ -1,5 +1,22 @@
 import { DEFAULT_SETTINGS, STORAGE_KEY } from "./config.js";
 
+const HEX_COLOR_REGEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+const normalizeHexColor = (value) => {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const trimmed = value.trim();
+  if (!HEX_COLOR_REGEX.test(trimmed)) {
+    return "";
+  }
+  if (trimmed.length === 4) {
+    const [, r, g, b] = trimmed;
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return trimmed.toLowerCase();
+};
+
 const sanitizeSettings = (input) => {
   const safe = {
     ...DEFAULT_SETTINGS
@@ -15,6 +32,28 @@ const sanitizeSettings = (input) => {
 
   if (typeof input.lineSpacing === "number" && input.lineSpacing >= 1 && input.lineSpacing <= 2) {
     safe.lineSpacing = input.lineSpacing;
+  }
+
+  const subtitleTextColor = normalizeHexColor(input.subtitleTextColor);
+  if (subtitleTextColor) {
+    safe.subtitleTextColor = subtitleTextColor;
+  }
+
+  const subtitleBackgroundColor = normalizeHexColor(input.subtitleBackgroundColor);
+  if (subtitleBackgroundColor) {
+    safe.subtitleBackgroundColor = subtitleBackgroundColor;
+  }
+
+  if (typeof input.subtitleBackgroundOpacity === "number" && input.subtitleBackgroundOpacity >= 0 && input.subtitleBackgroundOpacity <= 1) {
+    safe.subtitleBackgroundOpacity = input.subtitleBackgroundOpacity;
+  }
+
+  if (typeof input.subtitleFontWeight === "number" && input.subtitleFontWeight >= 300 && input.subtitleFontWeight <= 900) {
+    safe.subtitleFontWeight = Math.round(input.subtitleFontWeight);
+  }
+
+  if (typeof input.subtitleBorderRadiusPx === "number" && input.subtitleBorderRadiusPx >= 0 && input.subtitleBorderRadiusPx <= 24) {
+    safe.subtitleBorderRadiusPx = Math.round(input.subtitleBorderRadiusPx);
   }
 
   if (typeof input.opacity === "number" && input.opacity >= 0.2 && input.opacity <= 1) {
@@ -75,6 +114,10 @@ const sanitizeSettings = (input) => {
 
   if (typeof input.pocketBaseCollection === "string" && input.pocketBaseCollection.trim()) {
     safe.pocketBaseCollection = input.pocketBaseCollection.trim();
+  }
+
+  if (typeof input.pocketBaseTimedCollection === "string" && input.pocketBaseTimedCollection.trim()) {
+    safe.pocketBaseTimedCollection = input.pocketBaseTimedCollection.trim();
   }
 
   if (typeof input.pocketBaseAuthCollection === "string" && input.pocketBaseAuthCollection.trim()) {

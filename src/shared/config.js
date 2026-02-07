@@ -14,12 +14,18 @@ export const DEFAULT_SETTINGS = Object.freeze({
   aiMinChars: 12,
   pocketBaseUrl: "",
   pocketBaseCollection: "translations",
+  pocketBaseTimedCollection: "timed_captions",
   pocketBaseAuthCollection: "users",
   pocketBaseEmail: "",
   pocketBaseToken: "",
   pocketBaseUserId: "",
   fontSize: 24,
   lineSpacing: 1.1,
+  subtitleTextColor: "#ffffff",
+  subtitleBackgroundColor: "#000000",
+  subtitleBackgroundOpacity: 0.35,
+  subtitleFontWeight: 600,
+  subtitleBorderRadiusPx: 4,
   position: "bottom",
   opacity: 0.9
 });

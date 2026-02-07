@@ -13,6 +13,20 @@ const run = () => {
   assert(safe.position === DEFAULT_SETTINGS.position, "default position missing");
   assert(safe.translationProvider === DEFAULT_SETTINGS.translationProvider, "default translation provider missing");
   assert(safe.subtitleDisplayMode === DEFAULT_SETTINGS.subtitleDisplayMode, "default display mode missing");
+  assert(safe.subtitleTextColor === DEFAULT_SETTINGS.subtitleTextColor, "default subtitle text color missing");
+  assert(
+    safe.subtitleBackgroundColor === DEFAULT_SETTINGS.subtitleBackgroundColor,
+    "default subtitle background color missing"
+  );
+  assert(
+    safe.subtitleBackgroundOpacity === DEFAULT_SETTINGS.subtitleBackgroundOpacity,
+    "default subtitle background opacity missing"
+  );
+  assert(safe.subtitleFontWeight === DEFAULT_SETTINGS.subtitleFontWeight, "default subtitle font weight missing");
+  assert(
+    safe.subtitleBorderRadiusPx === DEFAULT_SETTINGS.subtitleBorderRadiusPx,
+    "default subtitle border radius missing"
+  );
 
   const sanitized = sanitizeSettings({
     fontSize: 8,
@@ -32,10 +46,16 @@ const run = () => {
     aiMinChars: 500,
     pocketBaseUrl: " https://pb.example.com/ ",
     pocketBaseCollection: "  translation_cache ",
+    pocketBaseTimedCollection: "  timed_caption_rows ",
     pocketBaseAuthCollection: "  users  ",
     pocketBaseEmail: "  me@example.com ",
     pocketBaseToken: "  abc123  ",
-    pocketBaseUserId: "  user_1  "
+    pocketBaseUserId: "  user_1  ",
+    subtitleTextColor: " #abc ",
+    subtitleBackgroundColor: "#123456",
+    subtitleBackgroundOpacity: 0.25,
+    subtitleFontWeight: 700,
+    subtitleBorderRadiusPx: 12
   });
 
   assert(sanitized.fontSize === DEFAULT_SETTINGS.fontSize, "font size not sanitized");
@@ -55,10 +75,16 @@ const run = () => {
   assert(sanitized.aiMinChars === DEFAULT_SETTINGS.aiMinChars, "aiMinChars should clamp to default");
   assert(sanitized.pocketBaseUrl === "https://pb.example.com", "PocketBase URL trim failed");
   assert(sanitized.pocketBaseCollection === "translation_cache", "PocketBase collection trim failed");
+  assert(sanitized.pocketBaseTimedCollection === "timed_caption_rows", "PocketBase timed collection trim failed");
   assert(sanitized.pocketBaseAuthCollection === "users", "PocketBase auth collection trim failed");
   assert(sanitized.pocketBaseEmail === "me@example.com", "PocketBase email trim failed");
   assert(sanitized.pocketBaseToken === "abc123", "PocketBase token trim failed");
   assert(sanitized.pocketBaseUserId === "user_1", "PocketBase user id trim failed");
+  assert(sanitized.subtitleTextColor === "#aabbcc", "subtitle text color should normalize hex");
+  assert(sanitized.subtitleBackgroundColor === "#123456", "subtitle background color should keep valid hex");
+  assert(sanitized.subtitleBackgroundOpacity === 0.25, "subtitle background opacity should be sanitized");
+  assert(sanitized.subtitleFontWeight === 700, "subtitle font weight should be sanitized");
+  assert(sanitized.subtitleBorderRadiusPx === 12, "subtitle border radius should be sanitized");
 };
 
 export { run };

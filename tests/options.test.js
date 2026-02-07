@@ -71,6 +71,7 @@ const createForm = () => {
   form.aiMinChars = createControl("12");
   form.pocketBaseUrl = createControl("https://pb.example.com");
   form.pocketBaseCollection = createControl("translations");
+  form.pocketBaseTimedCollection = createControl("timed_captions");
   form.pocketBaseAuthCollection = createControl("users");
   form.pocketBaseEmail = createControl("demo@example.com");
   form.pocketBasePassword = createControl("");
@@ -78,6 +79,11 @@ const createForm = () => {
   form.pocketBaseUserId = createControl("");
   form.fontSize = createControl("24");
   form.lineSpacing = createControl("1.1");
+  form.subtitleTextColor = createControl("#ffffff");
+  form.subtitleBackgroundColor = createControl("#000000");
+  form.subtitleBackgroundOpacity = createControl("0.35");
+  form.subtitleFontWeight = createControl("600");
+  form.subtitleBorderRadiusPx = createControl("4");
   form.opacity = createControl("0.9");
   form.position = createControl("bottom");
   form.topOffsetPx = createControl("72");
@@ -190,6 +196,7 @@ const runLoginTest = async () => {
       translationProvider: "gemini",
       pocketBaseUrl: "https://pb.example.com",
       pocketBaseCollection: "translations",
+      pocketBaseTimedCollection: "timed_captions",
       pocketBaseAuthCollection: "users",
       pocketBaseEmail: "user@example.com",
       pocketBaseToken: ""
@@ -243,6 +250,7 @@ const runLogoutTest = async () => {
       translationProvider: "gemini",
       pocketBaseUrl: "https://pb.example.com",
       pocketBaseCollection: "translations",
+      pocketBaseTimedCollection: "timed_captions",
       pocketBaseAuthCollection: "users",
       pocketBaseEmail: "user@example.com",
       pocketBaseToken: "existing-token"
@@ -276,6 +284,7 @@ const runLoginDecodeTokenFallbackTest = async () => {
       translationProvider: "gemini",
       pocketBaseUrl: "https://pb.example.com",
       pocketBaseCollection: "translations",
+      pocketBaseTimedCollection: "timed_captions",
       pocketBaseAuthCollection: "users",
       pocketBaseEmail: "user@example.com",
       pocketBaseToken: ""
