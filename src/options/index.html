@@ -93,6 +93,24 @@
         font-weight: 600;
         cursor: pointer;
       }
+      .actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      button.secondary {
+        background: #f0ede7;
+        color: var(--ink);
+        border: 1px solid var(--border);
+      }
+      .auth-status {
+        min-height: 18px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .auth-status.error {
+        color: #b3261e;
+      }
       .status {
         min-height: 18px;
         font-size: 13px;
@@ -209,6 +227,29 @@
             <div class="row">
               <label for="pocketBaseToken">PocketBase token (optional)</label>
               <input id="pocketBaseToken" name="pocketBaseToken" type="password" autocomplete="off" />
+            </div>
+            <input id="pocketBaseUserId" name="pocketBaseUserId" type="hidden" />
+            <div class="section">
+              <h2>PocketBase Auth</h2>
+              <div class="row-inline">
+                <div class="row">
+                  <label for="pocketBaseAuthCollection">Auth collection</label>
+                  <input id="pocketBaseAuthCollection" name="pocketBaseAuthCollection" type="text" placeholder="users" />
+                </div>
+                <div class="row">
+                  <label for="pocketBaseEmail">Email / identity</label>
+                  <input id="pocketBaseEmail" name="pocketBaseEmail" type="text" autocomplete="username" />
+                </div>
+              </div>
+              <div class="row">
+                <label for="pocketBasePassword">Password</label>
+                <input id="pocketBasePassword" name="pocketBasePassword" type="password" autocomplete="current-password" />
+              </div>
+              <div class="actions">
+                <button id="pocketBaseLogin" type="button">Login</button>
+                <button id="pocketBaseLogout" class="secondary" type="button">Logout</button>
+              </div>
+              <div id="pocketBaseAuthStatus" class="auth-status"></div>
             </div>
             <p class="hint">API key is stored in extension local storage on your browser profile.</p>
           </div>

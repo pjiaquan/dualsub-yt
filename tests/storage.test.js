@@ -32,7 +32,10 @@ const run = () => {
     aiMinChars: 500,
     pocketBaseUrl: " https://pb.example.com/ ",
     pocketBaseCollection: "  translation_cache ",
-    pocketBaseToken: "  abc123  "
+    pocketBaseAuthCollection: "  users  ",
+    pocketBaseEmail: "  me@example.com ",
+    pocketBaseToken: "  abc123  ",
+    pocketBaseUserId: "  user_1  "
   });
 
   assert(sanitized.fontSize === DEFAULT_SETTINGS.fontSize, "font size not sanitized");
@@ -52,7 +55,10 @@ const run = () => {
   assert(sanitized.aiMinChars === DEFAULT_SETTINGS.aiMinChars, "aiMinChars should clamp to default");
   assert(sanitized.pocketBaseUrl === "https://pb.example.com", "PocketBase URL trim failed");
   assert(sanitized.pocketBaseCollection === "translation_cache", "PocketBase collection trim failed");
+  assert(sanitized.pocketBaseAuthCollection === "users", "PocketBase auth collection trim failed");
+  assert(sanitized.pocketBaseEmail === "me@example.com", "PocketBase email trim failed");
   assert(sanitized.pocketBaseToken === "abc123", "PocketBase token trim failed");
+  assert(sanitized.pocketBaseUserId === "user_1", "PocketBase user id trim failed");
 };
 
 export { run };

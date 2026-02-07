@@ -20,7 +20,8 @@
     rafId: 0,
     debugText: {
       primary: "",
-      secondary: ""
+      secondary: "",
+      translationSource: ""
     },
     liveCaptionText: "",
     captionObserver: null,
@@ -29,12 +30,14 @@
     lastInitAttemptAt: 0,
     videoId: "",
     aiCache: new Map(),
+    aiCacheSource: new Map(),
     aiDbLookup: new Map(),
     aiPending: new Map(),
     aiQueue: null,
     aiQueueTimer: 0,
     aiInFlight: false,
-    aiLastRequestAt: 0
+    aiLastRequestAt: 0,
+    pocketBaseErrorCache: new Set()
   };
 
   const isWatchPage = () => window.location.pathname === "/watch";
@@ -79,6 +82,7 @@
     pocketBaseUrl: "",
     pocketBaseCollection: "translations",
     pocketBaseToken: "",
+    pocketBaseUserId: "",
     fontSize: 24,
     lineSpacing: 1.1,
     position: "bottom",
@@ -164,6 +168,10 @@
 
     if (typeof input.pocketBaseToken === "string") {
       safe.pocketBaseToken = input.pocketBaseToken.trim();
+    }
+
+    if (typeof input.pocketBaseUserId === "string") {
+      safe.pocketBaseUserId = input.pocketBaseUserId.trim();
     }
 
     return safe;
@@ -802,6 +810,45 @@
     }
   };
 
+  const loadAllAiTranslationsFromDb = async () => {
+    const db = await openAiDb();
+    if (!db) {
+      return [];
+    }
+
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(AI_DB_STORE, "readonly");
+        const store = tx.objectStore(AI_DB_STORE);
+
+        if (typeof store.getAll === "function") {
+          const request = store.getAll();
+          request.onsuccess = () => {
+            const rows = Array.isArray(request.result) ? request.result : [];
+            resolve(rows);
+          };
+          request.onerror = () => resolve([]);
+          return;
+        }
+
+        const rows = [];
+        const cursorRequest = store.openCursor();
+        cursorRequest.onsuccess = (event) => {
+          const cursor = event?.target?.result;
+          if (!cursor) {
+            resolve(rows);
+            return;
+          }
+          rows.push(cursor.value);
+          cursor.continue();
+        };
+        cursorRequest.onerror = () => resolve([]);
+      } catch (error) {
+        resolve([]);
+      }
+    });
+  };
+
   const buildAiCacheKey = (sourceText, settings, videoId) => {
     if (!sourceText) {
       return "";
@@ -840,6 +887,96 @@
     return headers;
   };
 
+  const decodePocketBaseUserIdFromToken = (token) => {
+    if (!token || typeof token !== "string") {
+      return "";
+    }
+
+    const segments = token.split(".");
+    if (segments.length < 2) {
+      return "";
+    }
+
+    const payloadSegment = segments[1];
+    const normalized = payloadSegment.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+
+    try {
+      const payloadText = atob(padded);
+      const payload = JSON.parse(payloadText);
+      if (typeof payload?.id === "string" && payload.id.trim()) {
+        return payload.id.trim();
+      }
+      if (typeof payload?.sub === "string" && payload.sub.trim()) {
+        return payload.sub.trim();
+      }
+    } catch (error) {
+      return "";
+    }
+
+    return "";
+  };
+
+  const getPocketBaseUserId = (settings) => {
+    if (!settings) {
+      return "";
+    }
+    if (typeof settings.pocketBaseUserId === "string" && settings.pocketBaseUserId.trim()) {
+      return settings.pocketBaseUserId.trim();
+    }
+    if (typeof settings.pocketBaseToken === "string" && settings.pocketBaseToken.trim()) {
+      return decodePocketBaseUserIdFromToken(settings.pocketBaseToken.trim());
+    }
+    return "";
+  };
+
+  const hashSourceText = (input) => {
+    const text = typeof input === "string" ? input : String(input || "");
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `fnv1a32-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  };
+
+  const readPocketBaseError = async (response) => {
+    if (!response) {
+      return "";
+    }
+
+    try {
+      const data = await response.clone().json();
+      if (typeof data?.message === "string" && data.message.trim()) {
+        return data.message.trim();
+      }
+      if (data && typeof data === "object") {
+        return JSON.stringify(data);
+      }
+    } catch (error) {
+      // noop
+    }
+
+    try {
+      const text = await response.clone().text();
+      return typeof text === "string" ? text.trim() : "";
+    } catch (error) {
+      return "";
+    }
+  };
+
+  const logPocketBaseErrorOnce = (scope, details = {}) => {
+    const key = `${scope}:${details?.status || ""}:${details?.message || ""}`;
+    if (STATE.pocketBaseErrorCache.has(key)) {
+      return;
+    }
+    STATE.pocketBaseErrorCache.add(key);
+    console.warn("DualSub PocketBase request failed", {
+      scope,
+      ...details
+    });
+  };
+
   const loadAiTranslationFromPocketBase = async (cacheKey, settings) => {
     if (!isPocketBaseEnabled(settings) || !cacheKey) {
       return "";
@@ -858,6 +995,12 @@
         headers: getPocketBaseHeaders(settings)
       });
       if (!response.ok) {
+        const message = await readPocketBaseError(response);
+        logPocketBaseErrorOnce("load", {
+          status: response.status,
+          endpoint,
+          message
+        });
         return "";
       }
       const payload = await response.json();
@@ -875,7 +1018,7 @@
 
     const baseUrl = settings.pocketBaseUrl;
     const collection = settings.pocketBaseCollection;
-    const endpoint = `${baseUrl}/api/collections/${encodeURIComponent(collection)}/records`;
+    const endpoint = `${baseUrl}/api/collections/${encodeURIComponent(collection)}/records?upsert=cache_key`;
 
     const payload = {
       cache_key: cacheKey,
@@ -883,12 +1026,18 @@
       source_lang: settings.aiSourceLang || settings.primaryLang || "",
       target_lang: settings.aiTargetLang || settings.secondaryLang || "",
       model: settings.aiModel || "",
-      source_text: sourceText,
+      source_text_hash: hashSourceText(sourceText),
+      updated_at: new Date().toISOString(),
       translation
     };
 
+    const userId = getPocketBaseUserId(settings);
+    if (userId) {
+      payload.user = userId;
+    }
+
     try {
-      await fetch(endpoint, {
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -896,8 +1045,22 @@
         },
         body: JSON.stringify(payload)
       });
+
+      if (!response.ok) {
+        const message = await readPocketBaseError(response);
+        logPocketBaseErrorOnce("save", {
+          status: response.status,
+          endpoint,
+          collection,
+          message
+        });
+      }
     } catch (error) {
-      // noop
+      logPocketBaseErrorOnce("save-network", {
+        endpoint,
+        collection,
+        message: error && error.message ? error.message : String(error || "")
+      });
     }
   };
 
@@ -912,6 +1075,7 @@
     STATE.aiPending.clear();
     if (clearCache) {
       STATE.aiCache.clear();
+      STATE.aiCacheSource.clear();
     }
   };
 
@@ -1007,6 +1171,7 @@
     STATE.aiLastRequestAt = Date.now();
 
     const { cacheKey, sourceText } = queued;
+    console.log("DualSub Translation Source:", "gemini:request");
     const task = requestGeminiTranslation(sourceText, STATE.settings);
     STATE.aiPending.set(cacheKey, task);
 
@@ -1014,6 +1179,8 @@
       const translated = await task;
       if (translated) {
         STATE.aiCache.set(cacheKey, translated);
+        STATE.aiCacheSource.set(cacheKey, "gemini");
+        console.log("DualSub Translation Source:", "gemini");
         await Promise.all([
           saveAiTranslationToDb(cacheKey, sourceText, translated, STATE.settings, STATE.videoId),
           saveAiTranslationToPocketBase(cacheKey, sourceText, translated, STATE.settings, STATE.videoId)
@@ -1064,6 +1231,8 @@
         .then(async (fromPocketBase) => {
           if (fromPocketBase) {
             STATE.aiCache.set(cacheKey, fromPocketBase);
+            STATE.aiCacheSource.set(cacheKey, "cache:pocketbase");
+            console.log("DualSub Translation Source:", "cache:pocketbase");
             await saveAiTranslationToDb(
               cacheKey,
               normalized,
@@ -1077,6 +1246,8 @@
           const fromLocalDb = await loadAiTranslationFromDb(cacheKey);
           if (fromLocalDb) {
             STATE.aiCache.set(cacheKey, fromLocalDb);
+            STATE.aiCacheSource.set(cacheKey, "cache:indexeddb");
+            console.log("DualSub Translation Source:", "cache:indexeddb");
             return;
           }
 
@@ -1505,15 +1676,21 @@ console.log("dualsub-yt: content-script loaded");
 
       const primaryText = primaryResult.cue ? primaryResult.cue.text : (STATE.liveCaptionText || "");
       let secondaryText = secondaryResult.cue ? secondaryResult.cue.text : "";
+      let translationSource = secondaryResult.cue ? "youtube" : "";
 
       if (!secondaryText && isAiTranslationEnabled(STATE.settings)) {
         const normalized = normalizeAiSourceText(primaryText);
         if (normalized) {
-          const cached = STATE.aiCache.get(normalized);
+          const cacheKey = buildAiCacheKey(normalized, STATE.settings, STATE.videoId);
+          const cached = cacheKey ? STATE.aiCache.get(cacheKey) : "";
           if (cached) {
             secondaryText = cached;
+            translationSource = cacheKey ? STATE.aiCacheSource.get(cacheKey) || "cache:memory" : "cache:memory";
           } else {
-            queueAiTranslation(normalized);
+            secondaryText = queueAiTranslation(normalized) || "";
+            if (secondaryText) {
+              translationSource = cacheKey ? STATE.aiCacheSource.get(cacheKey) || "cache:memory" : "cache:memory";
+            }
           }
         }
       }
@@ -1529,6 +1706,12 @@ console.log("dualsub-yt: content-script loaded");
       if (secondaryText !== STATE.debugText.secondary) {
         console.log("DualSub Secondary:", secondaryText);
         STATE.debugText.secondary = secondaryText;
+      }
+      if (translationSource && translationSource !== STATE.debugText.translationSource) {
+        console.log("DualSub Translation Source:", translationSource);
+        STATE.debugText.translationSource = translationSource;
+      } else if (!translationSource && STATE.debugText.translationSource) {
+        STATE.debugText.translationSource = "";
       }
 
       if (globalThis.__dualsub_debug__) {
@@ -1788,6 +1971,43 @@ console.log("dualsub-yt: content-script loaded");
     reset();
     init();
   };
+
+  const handleRuntimeMessage = (message, _sender, sendResponse) => {
+    if (!message || message.type !== "dualsub_export_translations") {
+      return undefined;
+    }
+
+    loadAllAiTranslationsFromDb()
+      .then((rows) => {
+        const normalized = rows
+          .filter((row) => row && typeof row === "object")
+          .map((row) => ({
+            key: typeof row.key === "string" ? row.key : "",
+            videoId: typeof row.videoId === "string" ? row.videoId : "",
+            model: typeof row.model === "string" ? row.model : "",
+            sourceLang: typeof row.sourceLang === "string" ? row.sourceLang : "",
+            targetLang: typeof row.targetLang === "string" ? row.targetLang : "",
+            sourceText: typeof row.sourceText === "string" ? row.sourceText : "",
+            translation: typeof row.translation === "string" ? row.translation : "",
+            updatedAt: Number.isFinite(row.updatedAt) ? row.updatedAt : 0
+          }))
+          .sort((left, right) => right.updatedAt - left.updatedAt);
+        sendResponse({ ok: true, records: normalized });
+      })
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          error: error && error.message ? error.message : "Failed to export translations."
+        });
+      });
+
+    return true;
+  };
+
+  const runtimeApi = globalThis.browser?.runtime || globalThis.chrome?.runtime;
+  if (runtimeApi?.onMessage?.addListener) {
+    runtimeApi.onMessage.addListener(handleRuntimeMessage);
+  }
 
   onReady(init);
   window.addEventListener("yt-navigate-finish", handleNavigation);

@@ -77,8 +77,20 @@ const sanitizeSettings = (input) => {
     safe.pocketBaseCollection = input.pocketBaseCollection.trim();
   }
 
+  if (typeof input.pocketBaseAuthCollection === "string" && input.pocketBaseAuthCollection.trim()) {
+    safe.pocketBaseAuthCollection = input.pocketBaseAuthCollection.trim();
+  }
+
+  if (typeof input.pocketBaseEmail === "string") {
+    safe.pocketBaseEmail = input.pocketBaseEmail.trim();
+  }
+
   if (typeof input.pocketBaseToken === "string") {
     safe.pocketBaseToken = input.pocketBaseToken.trim();
+  }
+
+  if (typeof input.pocketBaseUserId === "string") {
+    safe.pocketBaseUserId = input.pocketBaseUserId.trim();
   }
 
   return safe;
