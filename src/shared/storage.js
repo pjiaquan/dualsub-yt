@@ -33,6 +33,54 @@ const sanitizeSettings = (input) => {
     safe.secondaryLang = input.secondaryLang.trim();
   }
 
+  if (input.subtitleDisplayMode === "both" || input.subtitleDisplayMode === "translated-only") {
+    safe.subtitleDisplayMode = input.subtitleDisplayMode;
+  }
+
+  if (typeof input.topOffsetPx === "number" && input.topOffsetPx >= 0 && input.topOffsetPx <= 600) {
+    safe.topOffsetPx = Math.round(input.topOffsetPx);
+  }
+
+  if (typeof input.bottomOffsetPx === "number" && input.bottomOffsetPx >= 0 && input.bottomOffsetPx <= 600) {
+    safe.bottomOffsetPx = Math.round(input.bottomOffsetPx);
+  }
+
+  if (input.translationProvider === "youtube" || input.translationProvider === "gemini") {
+    safe.translationProvider = input.translationProvider;
+  }
+
+  if (typeof input.aiModel === "string" && input.aiModel.trim()) {
+    safe.aiModel = input.aiModel.trim();
+  }
+
+  if (typeof input.aiApiKey === "string") {
+    safe.aiApiKey = input.aiApiKey.trim();
+  }
+
+  if (typeof input.aiSourceLang === "string" && input.aiSourceLang.trim()) {
+    safe.aiSourceLang = input.aiSourceLang.trim();
+  }
+
+  if (typeof input.aiTargetLang === "string" && input.aiTargetLang.trim()) {
+    safe.aiTargetLang = input.aiTargetLang.trim();
+  }
+
+  if (typeof input.aiMinChars === "number" && input.aiMinChars >= 1 && input.aiMinChars <= 200) {
+    safe.aiMinChars = Math.round(input.aiMinChars);
+  }
+
+  if (typeof input.pocketBaseUrl === "string") {
+    safe.pocketBaseUrl = input.pocketBaseUrl.trim().replace(/\/+$/, "");
+  }
+
+  if (typeof input.pocketBaseCollection === "string" && input.pocketBaseCollection.trim()) {
+    safe.pocketBaseCollection = input.pocketBaseCollection.trim();
+  }
+
+  if (typeof input.pocketBaseToken === "string") {
+    safe.pocketBaseToken = input.pocketBaseToken.trim();
+  }
+
   return safe;
 };
 
@@ -56,4 +104,4 @@ const saveSettings = async (settings) => {
   });
 };
 
-export { loadSettings, saveSettings, sanitizeSettings };
+export { loadSettings, saveSettings, sanitizeSettings, STORAGE_KEY };

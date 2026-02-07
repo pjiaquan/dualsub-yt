@@ -17,7 +17,12 @@
         --border: #ded8cf;
       }
       body {
-        margin: 24px;
+        margin: 0;
+        padding: 24px;
+        min-height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
         background: linear-gradient(120deg, #f5f3ef 0%, #f1f4f1 50%, #efe9e0 100%);
         color: var(--ink);
       }
@@ -25,7 +30,7 @@
         border: 1px solid var(--border);
         border-radius: 16px;
         padding: 20px;
-        max-width: 720px;
+        width: min(720px, 100%);
         background: var(--card);
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
       }
@@ -48,11 +53,36 @@
         display: grid;
         gap: 8px;
       }
+      .row-inline {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .section {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 14px;
+        background: #faf8f5;
+        display: grid;
+        gap: 12px;
+      }
+      .section h2 {
+        margin: 0;
+        font-size: 15px;
+      }
       input, select {
         border: 1px solid var(--border);
         border-radius: 10px;
         padding: 8px 10px;
         font-size: 14px;
+      }
+      input[type="password"] {
+        letter-spacing: 0.04em;
+      }
+      .hint {
+        margin: 0;
+        font-size: 12px;
+        color: var(--muted);
       }
       button {
         background: var(--accent);
@@ -73,26 +103,152 @@
   <body>
     <div class="card">
       <h1>DualSub Options</h1>
-      <p>Adjust how the dual subtitles appear on YouTube.</p>
+      <p>Configure subtitle style and choose translation provider (YouTube or Gemini Flash).</p>
       <form id="settings-form">
-        <div class="row">
-          <label for="fontSize">Font size (px)</label>
-          <input id="fontSize" name="fontSize" type="number" min="12" max="64" />
+        <div class="section">
+          <h2>Language</h2>
+          <div class="row-inline">
+            <div class="row">
+              <label for="primaryLang">Primary subtitle language</label>
+              <select id="primaryLang" name="primaryLang">
+                <option value="en">English (en)</option>
+                <option value="zh-Hant">Chinese Traditional (zh-Hant)</option>
+                <option value="zh-Hans">Chinese Simplified (zh-Hans)</option>
+                <option value="ja">Japanese (ja)</option>
+                <option value="ko">Korean (ko)</option>
+                <option value="es">Spanish (es)</option>
+                <option value="fr">French (fr)</option>
+              </select>
+            </div>
+            <div class="row">
+              <label for="secondaryLang">Secondary subtitle language</label>
+              <select id="secondaryLang" name="secondaryLang">
+                <option value="zh-Hant">Chinese Traditional (zh-Hant)</option>
+                <option value="zh-Hans">Chinese Simplified (zh-Hans)</option>
+                <option value="en">English (en)</option>
+                <option value="ja">Japanese (ja)</option>
+                <option value="ko">Korean (ko)</option>
+                <option value="es">Spanish (es)</option>
+                <option value="fr">French (fr)</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <label for="subtitleDisplayMode">Subtitle display mode</label>
+            <select id="subtitleDisplayMode" name="subtitleDisplayMode">
+              <option value="both">Show both languages</option>
+              <option value="translated-only">Show translated language only</option>
+            </select>
+          </div>
         </div>
-        <div class="row">
-          <label for="lineSpacing">Line spacing</label>
-          <input id="lineSpacing" name="lineSpacing" type="number" min="1" max="2" step="0.05" />
+
+        <div class="section">
+          <h2>Translation Provider</h2>
+          <div class="row">
+            <label for="translationProvider">Subtitle translation source</label>
+            <select id="translationProvider" name="translationProvider">
+              <option value="youtube">YouTube captions</option>
+              <option value="gemini">Gemini Flash API</option>
+            </select>
+          </div>
+          <div id="ai-settings">
+            <div class="row-inline">
+              <div class="row">
+                <label for="aiModel">Gemini model</label>
+                <select id="aiModel" name="aiModel">
+                  <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                  <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+                </select>
+              </div>
+              <div class="row">
+                <label for="aiApiKey">Gemini API key</label>
+                <input id="aiApiKey" name="aiApiKey" type="password" autocomplete="off" />
+              </div>
+            </div>
+            <div class="row-inline">
+              <div class="row">
+                <label for="aiSourceLang">AI source language</label>
+                <select id="aiSourceLang" name="aiSourceLang">
+                  <option value="auto">Auto-detect</option>
+                  <option value="en">English (en)</option>
+                  <option value="zh-Hant">Chinese Traditional (zh-Hant)</option>
+                  <option value="zh-Hans">Chinese Simplified (zh-Hans)</option>
+                  <option value="ja">Japanese (ja)</option>
+                  <option value="ko">Korean (ko)</option>
+                  <option value="es">Spanish (es)</option>
+                  <option value="fr">French (fr)</option>
+                </select>
+              </div>
+              <div class="row">
+                <label for="aiTargetLang">AI target language</label>
+                <select id="aiTargetLang" name="aiTargetLang">
+                  <option value="zh-Hant">Chinese Traditional (zh-Hant)</option>
+                  <option value="zh-Hans">Chinese Simplified (zh-Hans)</option>
+                  <option value="en">English (en)</option>
+                  <option value="ja">Japanese (ja)</option>
+                  <option value="ko">Korean (ko)</option>
+                  <option value="es">Spanish (es)</option>
+                  <option value="fr">French (fr)</option>
+                </select>
+              </div>
+            </div>
+            <div class="row">
+              <label for="aiMinChars">Minimum chars before sending AI request</label>
+              <input id="aiMinChars" name="aiMinChars" type="number" min="1" max="200" />
+            </div>
+            <div class="row-inline">
+              <div class="row">
+                <label for="pocketBaseUrl">PocketBase URL</label>
+                <input id="pocketBaseUrl" name="pocketBaseUrl" type="url" placeholder="https://pb.example.com" />
+              </div>
+              <div class="row">
+                <label for="pocketBaseCollection">PocketBase collection</label>
+                <input id="pocketBaseCollection" name="pocketBaseCollection" type="text" placeholder="translations" />
+              </div>
+            </div>
+            <div class="row">
+              <label for="pocketBaseToken">PocketBase token (optional)</label>
+              <input id="pocketBaseToken" name="pocketBaseToken" type="password" autocomplete="off" />
+            </div>
+            <p class="hint">API key is stored in extension local storage on your browser profile.</p>
+          </div>
         </div>
-        <div class="row">
-          <label for="opacity">Opacity</label>
-          <input id="opacity" name="opacity" type="number" min="0.2" max="1" step="0.05" />
-        </div>
-        <div class="row">
-          <label for="position">Position</label>
-          <select id="position" name="position">
-            <option value="bottom">Bottom</option>
-            <option value="top">Top</option>
-          </select>
+
+        <div class="section">
+          <h2>Appearance</h2>
+          <div class="row-inline">
+            <div class="row">
+              <label for="fontSize">Font size (px)</label>
+              <input id="fontSize" name="fontSize" type="number" min="12" max="64" />
+            </div>
+            <div class="row">
+              <label for="lineSpacing">Line spacing</label>
+              <input id="lineSpacing" name="lineSpacing" type="number" min="1" max="2" step="0.05" />
+            </div>
+          </div>
+          <div class="row-inline">
+            <div class="row">
+              <label for="opacity">Opacity</label>
+              <input id="opacity" name="opacity" type="number" min="0.2" max="1" step="0.05" />
+            </div>
+            <div class="row">
+              <label for="position">Position</label>
+              <select id="position" name="position">
+                <option value="bottom">Bottom</option>
+                <option value="top">Top</option>
+              </select>
+            </div>
+          </div>
+          <div class="row-inline">
+            <div class="row">
+              <label for="topOffsetPx">Top offset (px)</label>
+              <input id="topOffsetPx" name="topOffsetPx" type="number" min="0" max="600" />
+            </div>
+            <div class="row">
+              <label for="bottomOffsetPx">Bottom offset (px)</label>
+              <input id="bottomOffsetPx" name="bottomOffsetPx" type="number" min="0" max="600" />
+            </div>
+          </div>
         </div>
         <button type="submit">Save settings</button>
         <div class="status" id="status"></div>

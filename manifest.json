@@ -3,8 +3,13 @@
   "name": "DualSub for YouTube",
   "version": "0.1.0",
   "description": "Dual subtitles on YouTube using auto-generated English and Traditional Chinese.",
-  "permissions": ["storage"],
-  "host_permissions": ["https://www.youtube.com/*"],
+  "permissions": ["storage", "contextMenus"],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://*.googlevideo.com/*",
+    "https://*.youtube.com/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
   "content_scripts": [
     {
       "matches": ["https://www.youtube.com/watch*"],

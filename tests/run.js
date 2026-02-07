@@ -2,11 +2,13 @@ import { run as runSelectorTests } from "./selector.test.js";
 import { run as runOverlayTests } from "./overlay.test.js";
 import { run as runStorageTests } from "./storage.test.js";
 import { run as runIntegrationTests } from "./integration/watch-page.test.js";
+import { run as runParserTests } from "./parser.test.js";
 
 const runAll = () => {
   runSelectorTests();
   runOverlayTests();
   runStorageTests();
+  runParserTests();
   runIntegrationTests();
 };
 

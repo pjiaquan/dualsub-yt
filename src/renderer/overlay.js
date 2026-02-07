@@ -1,3 +1,5 @@
+console.log("dualsub-yt: overlay renderer loaded");
+
 const createElement = (tag, className) => {
   const el = document.createElement(tag);
   if (className) {
@@ -57,6 +59,8 @@ const createOverlay = (container, settings) => {
     throw new Error("Overlay container is required");
   }
 
+  console.log("dualsub-yt: createOverlay called", { settings });
+
   const root = createElement("div", "dualsub-overlay");
   const primaryLine = createElement("div", "dualsub-line primary");
   const secondaryLine = createElement("div", "dualsub-line secondary");
@@ -87,6 +91,7 @@ const createOverlay = (container, settings) => {
   };
 
   const destroy = () => {
+    console.log("dualsub-yt: destroy overlay");
     if (root.parentNode) {
       root.parentNode.removeChild(root);
     }
