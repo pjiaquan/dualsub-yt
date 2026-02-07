@@ -1,0 +1,22 @@
+{
+  "captions": {
+    "playerCaptionsTracklistRenderer": {
+      "captionTracks": [
+        {
+          "languageCode": "en",
+          "kind": "asr",
+          "baseUrl": "https://example.com/en-auto"
+        },
+        {
+          "languageCode": "zh-Hant",
+          "kind": "asr",
+          "baseUrl": "https://example.com/zh-hant-auto"
+        },
+        {
+          "languageCode": "en",
+          "baseUrl": "https://example.com/en-manual"
+        }
+      ]
+    }
+  }
+}

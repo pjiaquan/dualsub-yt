@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DualSub Options</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Source Sans 3", "Segoe UI", "Noto Sans", sans-serif;
+        line-height: 1.4;
+        --bg: #f5f3ef;
+        --card: #ffffff;
+        --ink: #1f1f1f;
+        --accent: #1e6a5c;
+        --muted: #6b6b6b;
+        --border: #ded8cf;
+      }
+      body {
+        margin: 24px;
+        background: linear-gradient(120deg, #f5f3ef 0%, #f1f4f1 50%, #efe9e0 100%);
+        color: var(--ink);
+      }
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 20px;
+        max-width: 720px;
+        background: var(--card);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+      }
+      h1 {
+        font-family: "Fraunces", "Source Serif 4", serif;
+        margin: 0 0 8px;
+      }
+      p {
+        color: var(--muted);
+      }
+      form {
+        display: grid;
+        gap: 16px;
+        margin-top: 16px;
+      }
+      label {
+        font-weight: 600;
+      }
+      .row {
+        display: grid;
+        gap: 8px;
+      }
+      input, select {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 8px 10px;
+        font-size: 14px;
+      }
+      button {
+        background: var(--accent);
+        color: white;
+        border: none;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .status {
+        min-height: 18px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>DualSub Options</h1>
+      <p>Adjust how the dual subtitles appear on YouTube.</p>
+      <form id="settings-form">
+        <div class="row">
+          <label for="fontSize">Font size (px)</label>
+          <input id="fontSize" name="fontSize" type="number" min="12" max="64" />
+        </div>
+        <div class="row">
+          <label for="lineSpacing">Line spacing</label>
+          <input id="lineSpacing" name="lineSpacing" type="number" min="1" max="2" step="0.05" />
+        </div>
+        <div class="row">
+          <label for="opacity">Opacity</label>
+          <input id="opacity" name="opacity" type="number" min="0.2" max="1" step="0.05" />
+        </div>
+        <div class="row">
+          <label for="position">Position</label>
+          <select id="position" name="position">
+            <option value="bottom">Bottom</option>
+            <option value="top">Top</option>
+          </select>
+        </div>
+        <button type="submit">Save settings</button>
+        <div class="status" id="status"></div>
+      </form>
+    </div>
+    <script type="module" src="./options.js"></script>
+  </body>
+</html>

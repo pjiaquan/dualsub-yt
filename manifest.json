@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "DualSub for YouTube",
+  "version": "0.1.0",
+  "description": "Dual subtitles on YouTube using auto-generated English and Traditional Chinese.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://www.youtube.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/watch*"],
+      "js": ["src/content-script.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "options_ui": {
+    "page": "src/options/index.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "DualSub"
+  }
+}
